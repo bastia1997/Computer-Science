@@ -4395,6 +4395,27 @@ System.out.println("Main terminato");
 // probabilmente prima di stampare "Pulizia...".
 \end{lstlisting}
 
+\subsection{I Metodi Fondamentali (API Lifecycle)}
+Oltre a \texttt{start()}, la classe \texttt{Thread} espone metodi critici per orchestrare l'esecuzione e la cooperazione tra thread. È vitale distinguere tra metodi \textbf{statici} (che agiscono sempre sul thread \textit{corrente}) e metodi \textbf{di istanza} (che agiscono sul thread rappresentato dall'oggetto).
+
+\begin{enumerate}
+    \item \textbf{\texttt{static void sleep(long millis)}}:
+    Mette in pausa il thread \textbf{corrente} per un tempo determinato.
+    Lo stato del thread passa da \textit{RUNNABLE} a \textit{TIMED\_WAITING}.
+    \textbf{Nota:} Non rilascia i lock o i monitor che il thread possiede!
+    
+    \item \textbf{\texttt{void join()}}:
+    Permette a un thread di "aspettare" la fine di un altro.
+    Se il Thread A chiama \texttt{B.join()}, il Thread A si blocca (entra in \textit{WAITING}) finché il Thread B non termina la sua esecuzione. È essenziale per coordinare risultati.
+
+    \item \textbf{\texttt{static void yield()}}:
+    È un suggerimento allo Scheduler del Sistema Operativo. Il thread corrente dice: \textit{"Ho finito la mia fase critica, se c'è qualcun altro che vuole usare la CPU, mi faccio da parte"}.
+    \textbf{Attenzione:} Lo scheduler può ignorare questo suggerimento. Non garantisce nulla.
+    
+    \item \textbf{\texttt{void interrupt()}}:
+    Invia un segnale di interruzione al thread target. Non ferma il thread brutalmente (come il deprecato \texttt{stop()}), ma setta solo un flag booleano interno. Sta al codice del thread controllare questo flag e terminare gentilmente.
+\end{enumerate}
+
 \begin{interview}{Start() vs Run()}
     \textbf{Domanda:} "Qual è la differenza tra chiamare \texttt{t.start()} e \texttt{t.run()}?"
     
@@ -4404,6 +4425,37 @@ System.out.println("Main terminato");
         \item \textbf{\texttt{t.start()}}: Fa una System Call al sistema operativo per allocare un nuovo Thread nativo, crea un nuovo Stack, e istruisce lo scheduler OS di eseguire il metodo \texttt{run} in quel nuovo contesto.
     \end{itemize}
 \end{interview}
+
+\begin{interview}{Differenza tra sleep() e wait()}
+    Questa è una delle domande più frequenti in assoluto. Entrambi mettono in pausa il thread, ma con una differenza enorme nella gestione della sincronizzazione.
+    
+    \begin{itemize}
+        \item \textbf{\texttt{Thread.sleep()}}:
+        \begin{itemize}
+            \item È un metodo statico di \texttt{Thread}.
+            \item \textbf{Mantiene i Lock:} Se il thread ha acquisito un lock (è dentro un \texttt{synchronized}), va a dormire \textit{tenendosi le chiavi in tasca}. Nessun altro può entrare in quella sezione critica.
+            \item Usato per: attese temporali.
+        \end{itemize}
+        
+        \item \textbf{\texttt{Object.wait()}}:
+        \begin{itemize}
+            \item È un metodo di \texttt{Object} (ogni oggetto ce l'ha).
+            \item \textbf{Rilascia il Lock:} Il thread rilascia il monitor e va in attesa. Altri thread possono entrare nel blocco \texttt{synchronized}.
+            \item Usato per: comunicazione inter-thread (notify).
+        \end{itemize}
+    \end{itemize}
+\end{interview}
+
+\begin{deepdive}{Interrupt: I tre metodi della confusione}
+    Gestire l'interruzione è complicato perché ci sono tre metodi con nomi simili:
+    
+    \begin{enumerate}
+        \item \texttt{interrupt()} (Istanza): "Bussa alla porta". Setta il flag \textit{interrupted status} a \texttt{true}.
+        \item \texttt{isInterrupted()} (Istanza): Controlla il flag senza modificarlo. Restituisce \texttt{true/false}.
+        \item \texttt{Thread.interrupted()} (Statico): Controlla il flag del thread corrente e \textbf{lo resetta a false}!
+        \textit{Perché resettarlo?} È utile se vuoi "consumare" l'interruzione e continuare a lavorare pulito, ma è fonte di molti bug se usato per sbaglio al posto di \texttt{isInterrupted()}.
+    \end{enumerate}
+\end{deepdive}
 
 \section{Problemi di Concorrenza: Race Condition e Deadlock}
 
@@ -4870,6 +4922,74 @@ ExecutorService safePool = new ThreadPoolExecutor(
 \end{verbatim}
 \end{small}
 \end{deepdive}
+
+\subsection{I Metodi dell'ExecutorService: Submit e Shutdown}
+Una volta ottenuto un'istanza di \texttt{ExecutorService}, dobbiamo interagire con essa. L'interfaccia offre due categorie principali di metodi: quelli per sottomettere i task e quelli per gestire il ciclo di vita del pool.
+
+\subsubsection{1. Sottomissione dei Task}
+Esistono due modi per passare lavoro al pool. Scegliere quello giusto è importante per la gestione delle eccezioni.
+
+\begin{itemize}
+    \item \textbf{\texttt{void execute(Runnable command)}}:
+    Metodo "Fire-and-Forget". Si passa un task che non restituisce nulla.
+    \textit{Difetto:} Se il task lancia un'eccezione non controllata (RuntimeException), l'eccezione viene stampata sulla console e il thread potrebbe morire (venendo rimpiazzato dal pool), ma il chiamante non ha modo di saperlo o gestirlo.
+    
+    \item \textbf{\texttt{Future<T> submit(Callable<T> task)}}:
+    Il metodo preferito. Restituisce un oggetto \texttt{Future} che rappresenta il risultato pendente.
+    \textit{Vantaggio:} Se il task lancia un'eccezione, questa viene "catturata" e conservata dentro il Future. Verrà rilanciata (come \texttt{ExecutionException}) solo quando chiamerai \texttt{future.get()}.
+\end{itemize}
+
+\begin{interview}{execute() vs submit()}
+    \textbf{Domanda:} "Qual è la differenza fondamentale nella gestione degli errori tra \texttt{execute} e \texttt{submit}?"
+    
+    \textbf{Risposta:}
+    \begin{itemize}
+        \item Con \textbf{\texttt{execute()}}, le eccezioni "scappano" dallo stack del thread e finiscono nell'\texttt{UncaughtExceptionHandler}. Se non ne hai configurato uno, vedi solo lo stacktrace nei log di sistema.
+        \item Con \textbf{\texttt{submit()}}, l'eccezione è "ingabbiata" nel Future. Il task sembra finire con successo, ma l'errore esplode solo quando il thread principale chiede il risultato.
+    \end{itemize}
+\end{interview}
+
+\subsubsection{2. Spegnimento (Shutdown)}
+Un \texttt{ExecutorService} non è un oggetto normale: contiene thread attivi. Se il tuo programma Java finisce il `main` ma non spegni il pool, la JVM **non si chiuderà mai** (perché i thread del pool sono User Threads, non Daemon).
+
+Ecco la "Trinità dello Shutdown":
+
+\begin{itemize}
+    \item \textbf{\texttt{void shutdown()}}:
+    Lo spegnimento "gentile". Il pool smette di accettare \textit{nuovi} task, ma continua a lavorare per finire quelli già in coda. È asincrono (ritorna subito).
+    
+    \item \textbf{\texttt{List<Runnable> shutdownNow()}}:
+    Lo spegnimento "brutale". Tenta di fermare i thread attivi (usando \texttt{interrupt()}) e restituisce una lista dei task che erano in coda e non sono mai partiti.
+    
+    \item \textbf{\texttt{boolean awaitTermination(long timeout, TimeUnit unit)}}:
+    Metodo bloccante. Il thread corrente aspetta che il pool sia effettivamente spento (tutti i task finiti). Restituisce \texttt{true} se il pool si è spento, \texttt{false} se è scaduto il timeout.
+\end{itemize}
+
+\begin{lstlisting}[language=Java, caption=Il Pattern "Graceful Shutdown" (Da imparare a memoria)]
+ExecutorService pool = Executors.newFixedThreadPool(10);
+
+// ... utilizzo del pool ...
+
+// 1. Smetti di accettare nuovi ordini
+pool.shutdown(); 
+
+try {
+    // 2. Aspetta un tempo ragionevole (es. 60s) che finiscano i lavori in corso
+    if (!pool.awaitTermination(60, TimeUnit.SECONDS)) {
+        
+        // 3. Tempo scaduto! Forza la chiusura
+        pool.shutdownNow(); 
+        
+        // 4. Aspetta ancora un attimo che i thread rispondano all'interrupt
+        if (!pool.awaitTermination(60, TimeUnit.SECONDS))
+            System.err.println("Il Pool non vuole terminare!");
+    }
+} catch (InterruptedException ie) {
+    // 5. (Opzionale) Se il thread che sta facendo lo shutdown viene interrotto
+    pool.shutdownNow();
+    Thread.currentThread().interrupt();
+}
+\end{lstlisting}
 
 \section{Gestione Asincrona: Future vs CompletableFuture}
 
