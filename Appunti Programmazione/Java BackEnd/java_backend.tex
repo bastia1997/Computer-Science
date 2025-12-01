@@ -4534,6 +4534,22 @@ public class DeadlockDemo {
         }
     }
 }
+
+public class MainDeadlock {
+    public static void main(String[] args) {
+        DeadlockDemo demo = new DeadlockDemo();
+
+        // **Creazione dei Thread**
+        Thread t1 = new Thread(() -> demo.thread1(), "Thread-1");
+        Thread t2 = new Thread(() -> demo.thread2(), "Thread-2");
+
+        // **Avvio dei Thread**
+        t1.start();
+        t2.start();
+
+        System.out.println("Avviati Thread-1 e Thread-2");
+    }
+}
 \end{lstlisting}
 
 In questo scenario:
