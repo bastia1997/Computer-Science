@@ -2302,6 +2302,66 @@ La JVM aggiunge automaticamente due metodi statici utilissimi:
 
 L'Object Oriented Programming si regge su quattro pilastri. Conoscerli a memoria non basta; bisogna saper spiegare \textit{come} Java li implementa e quali limitazioni impone.
 
+\section{I 4 Pilastri della Programmazione ad Oggetti (OOP)}
+
+La Programmazione Orientata agli Oggetti (OOP) non è solo una sintassi particolare; è un \textbf{paradigma di pensiero}.
+L'idea di base è modellare il software come se fosse il mondo reale: non più una lunga lista di istruzioni procedurali, ma un insieme di "Oggetti" che interagiscono tra loro scambiandosi messaggi.
+
+Per definire un sistema OOP "puro", ci si basa su quattro concetti fondamentali, noti come i "Pilastri". Durante un colloquio, è essenziale saperli definire concettualmente, slegandosi dal codice.
+
+\subsection{1. Astrazione (Abstraction)}
+L'astrazione è l'arte di \textbf{semplificare la realtà}.
+Nel mondo reale, ogni oggetto è infinitamente complesso. Quando programmiamo, non ci serve modellare ogni singolo atomo di un'automobile. Ci interessa modellare solo ciò che serve al nostro sistema (es. \textit{marca}, \textit{modello}, \textit{velocità}).
+
+\begin{itemize}
+    \item \textbf{Concetto:} Nascondere la complessità dei dettagli implementativi e mostrare solo le funzionalità essenziali all'utente.
+    \item \textbf{Analogy:} Quando guidi un'auto, interagisci con il volante e i pedali (l'interfaccia astratta). Non hai bisogno di sapere come funziona l'iniezione elettronica o la combustione interna (i dettagli complessi) per poter guidare.
+\end{itemize}
+
+\subsection{2. Incapsulamento (Encapsulation)}
+L'incapsulamento è un meccanismo di \textbf{protezione e controllo}.
+Serve a raggruppare dati (variabili) e metodi (comportamenti) in un'unica unità (la Classe) e a limitarne l'accesso dall'esterno.
+
+\begin{itemize}
+    \item \textbf{Concetto:} Impedire che i dati interni di un oggetto vengano modificati arbitrariamente da altri oggetti. L'oggetto diventa una "Black Box": protegge il proprio stato e permette modifiche solo attraverso metodi controllati.
+    \item \textbf{Analogy:} Pensa a un conto bancario. Non puoi entrare nel database della banca e modificare il tuo saldo a mano. Devi usare uno sportello o un'app (metodi pubblici) che verificano se hai i fondi prima di prelevare. L'incapsulamento garantisce l'integrità del saldo.
+\end{itemize}
+
+\subsection{3. Ereditarietà (Inheritance)}
+L'ereditarietà è un meccanismo di \textbf{riutilizzo e gerarchia}.
+Permette di creare nuove classi basandosi su classi esistenti, ereditandone caratteristiche e comportamenti senza dover riscrivere il codice.
+
+\begin{itemize}
+    \item \textbf{Concetto:} Stabilire una relazione "Is-A" (È-Un) tra concetti generali e concetti specifici. Evita la duplicazione del codice (principio DRY - Don't Repeat Yourself).
+    \item \textbf{Analogy:} In biologia, un "Cane" eredita le caratteristiche di un "Mammifero", che a sua volta eredita da "Animale". Il cane ha tutte le proprietà dell'animale (respira, mangia) più le sue specificità (abbaia).
+\end{itemize}
+
+\subsection{4. Polimorfismo (Polymorphism)}
+Il termine deriva dal greco "molte forme". È la capacità di oggetti di tipo diverso di rispondere allo stesso messaggio (metodo) in modi differenti. È il pilastro che garantisce la \textbf{flessibilità} del sistema.
+
+\begin{itemize}
+    \item \textbf{Concetto:} Un'unica interfaccia per molte implementazioni. Posso trattare un gruppo di oggetti diversi come se fossero lo stesso tipo generico, e lasciare che ognuno esegua l'azione a modo suo.
+    \item \textbf{Analogy:} Prendi un telecomando universale col tasto "Play".
+    \begin{itemize}
+        \item Se lo punti verso un lettore DVD, il tasto "Play" fa girare il disco.
+        \item Se lo punti verso un lettore MP3, il tasto "Play" avvia la musica digitale.
+        \item Se lo punti verso una console, il tasto "Play" avvia il gioco.
+    \end{itemize}
+    L'azione (l'interfaccia "Play") è la stessa, ma il risultato (l'implementazione) cambia a seconda dell'oggetto che la riceve.
+\end{itemize}
+
+\begin{interview}{Come spiegheresti i 4 pilastri in 30 secondi?}
+    \textbf{Domanda:} "Senza scrivere codice, riassumimi i vantaggi dell'OOP."
+    
+    \textbf{Risposta:}
+    \begin{enumerate}
+        \item \textbf{Astrazione:} Riduce la complessità concentrandosi su "Cosa fa" l'oggetto, non su "Come lo fa".
+        \item \textbf{Incapsulamento:} Protegge i dati da modifiche non autorizzate, garantendo stabilità.
+        \item \textbf{Ereditarietà:} Elimina la ridondanza organizzando il codice in gerarchie logiche.
+        \item \textbf{Polimorfismo:} Rende il sistema estendibile, permettendo di aggiungere nuovi tipi di oggetti senza rompere il codice esistente che li utilizza.
+    \end{enumerate}
+\end{interview}
+
 \section{Incapsulamento: Oltre i Getter e Setter}
 
 L'incapsulamento non serve solo a "nascondere i dati", ma a \textbf{proteggere gli invarianti} della classe.
@@ -2415,6 +2475,57 @@ L'astrazione è uno dei pilastri della OOP, ma la distinzione tra Classi Astratt
 \hline
 \end{tabular}
 \end{table}
+
+\subsection{Esempio Pratico: Il problema dello Stato}
+
+Per capire perché non possiamo usare sempre e solo le interfacce, proviamo a modellare un videogioco.
+Vogliamo che le nostre entità abbiano una \textbf{barra della vita (energia)} che diminuisce quando fanno azioni.
+
+\begin{itemize}
+    \item \textbf{Il problema:} Se definissimo \texttt{energia} in un'interfaccia, sarebbe implicitamente \texttt{public static final} (una costante). Non potremmo mai scrivere \texttt{energia -= 10}, perché le costanti non cambiano!
+    \item \textbf{La soluzione:} Usiamo una \textbf{Classe Astratta} per contenere la variabile \texttt{energia} (lo Stato) e un'\textbf{Interfaccia} per definire abilità extra come \texttt{Volante} (il Comportamento).
+\end{itemize}
+
+\begin{lstlisting}[language=Java, caption=Gestione dello Stato: Classe Astratta vs Interfaccia]
+// 1. CLASSE ASTRATTA: Gestisce lo STATO (Chi sono e come sto)
+public abstract class Personaggio {
+    // Questo è lo "Stato Interno". 
+    // Un'interfaccia NON può avere questo campo modificabile.
+    protected int energia = 100; 
+
+    // Metodo concreto che manipola lo stato
+    public void riposa() {
+        this.energia = 100;
+        System.out.println("Energia ripristinata.");
+    }
+}
+
+// 2. INTERFACCIA: Gestisce il COMPORTAMENTO (Cosa so fare)
+public interface Volante {
+    void vola();
+}
+
+// 3. CLASSE CONCRETA
+public class Drago extends Personaggio implements Volante {
+    
+    @Override
+    public void vola() {
+        // Posso accedere e modificare lo stato ereditato
+        if (this.energia >= 10) {
+            System.out.println("Il drago sta volando in alto!");
+            this.energia -= 10; // MODIFICA DELLO STATO (Possibile solo grazie alla classe astratta)
+        } else {
+            System.out.println("Troppo stanco per volare.");
+        }
+    }
+}
+\end{lstlisting}
+
+\begin{deepdive}{In sintesi}
+    Se provassi a mettere \texttt{int energia = 100;} dentro l'interfaccia \texttt{Volante}, Java lo trasformerebbe automaticamente in una costante (\texttt{final}). 
+    Alla riga \texttt{this.energia -= 10} riceveresti un errore di compilazione: \textit{"Cannot assign a value to final variable energy"}.
+    Ecco perché per gestire dati che cambiano nel tempo (stato) serve una Classe (Astratta o no).
+\end{deepdive}
 
 \section{Evoluzione delle Interfacce (Java 8, 9, 17+)}
 
