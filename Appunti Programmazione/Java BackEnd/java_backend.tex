@@ -429,7 +429,7 @@ Per un professionista, orientarsi in questa "zuppa di numeri" è fondamentale. N
 Oracle e la community OpenJDK hanno adottato un modello a due velocità:
 
 \begin{itemize}
-    \item \textbf{Feature Releases (ogni 6 mesi):} Versioni intermedie (es. 18, 19, 20). Hanno vita breve (supporto di 6 mesi). Servono per testare nuove funzionalità in produzione rapida. Sconsigliate per progetti enterprise a lungo termine.
+    \item \textbf{Feature Releases (ogni 6 mesi):} Versioni intermedie (es. 18, 19, 20, 22, 23, 24). Hanno vita breve (supporto di 6 mesi). Servono per testare nuove funzionalità in produzione rapida. Sconsigliate per progetti enterprise a lungo termine.
     \item \textbf{LTS - Long Term Support (ogni 2-3 anni):} Versioni stabili (8, 11, 17, 21, 25). I vendor (Oracle, Amazon, Red Hat) garantiscono patch di sicurezza per anni (anche 8-10 anni). Sono lo standard industriale.
 \end{itemize}
 
@@ -705,23 +705,32 @@ Person b = a;
 \end{lstlisting}
 
 \begin{deepdive}{Quanto pesa davvero un Oggetto? (Byte Level)}
-Spesso si pensa che un oggetto vuoto pesi 0 byte. Falso. Ogni oggetto nello Heap ha un \textbf{Overhead} gestito dalla JVM, chiamato \textit{Object Header}, che precede i dati reali.
+È un errore comune pensare che un oggetto vuoto (senza campi) occupi 0 byte. In realtà, ogni oggetto allocato nello Heap porta con sé un sovraccarico strutturale (\textit{Overhead}) gestito dalla JVM, noto come \textbf{Object Header}.
 
-Un oggetto tipico in una JVM contiene:
+La struttura in memoria di un oggetto è composta da:
 \begin{itemize}
-    \item \textbf{Mark Word (4 byte per JVM 32 bit o 8 byte per JVM 64 bit)}: Contiene l'hashcode dell'oggetto, informazioni sul locking (sincronizzazione) e flag per il Garbage Collector.
-    \item \textbf{Class Pointer (4 byte per JVM 32 bit e JVM 64 bit Compressed Oops oppure 8 byte per JVM puro 64 bit)}: Un puntatore alla classe di appartenenza (per sapere che tipo di oggetto è) nel Metaspace.
-	\item \textbf{Dati}: Derivati dalle proprietà dell'oggetto.
-    \item \textbf{Padding}: La memoria è allineata in base all'architettura del processore (per cui la JVM gira a 32 o 64 bit). 
+    \item \textbf{Mark Word (4 o 8 byte):} Contiene metadati vitali come l'hashcode, i lock di sincronizzazione e i flag per il Garbage Collector. (4 byte su 32-bit, 8 byte su 64-bit).
+    \item \textbf{Class Pointer (4 o 8 byte):} È il puntatore che collega l'istanza alla sua classe nel Metaspace. Su JVM a 64-bit, questo puntatore viene solitamente compresso a 4 byte (\textit{Compressed Oops}) per risparmiare memoria.
+    \item \textbf{Instance Data:} I dati effettivi dei campi dell'oggetto (0 byte se l'oggetto è vuoto).
+    \item \textbf{Padding:} Spazio vuoto aggiunto per rispettare l'allineamento della memoria. La JVM impone che ogni oggetto occupi un numero di byte multiplo di 8.
 \end{itemize}
-\noindent
-Le architetture x86 elaborano parole (word) da 32 bit ovvero 4 byte, per cui il padding avrà un valore tale che il peso dell'oggetto sia multiplo di 4 byte. 
-\newline
-Un oggetto vuoto su sistemi a 32 bit pesa \textbf{8 byte} (mark word + class pointer) senza necessità di padding.
-\newline\newline
-Le architetture x64 elaborano parole (word) da 64 bit ovvero 8 byte, per cui il padding avrà un valore tale che il peso dell'oggetto sia multiplo di 8 byte.
-Un oggetto vuoto su sistemi a 64 bit con Compressed Oops può pesare 12 byte (mark word + class pointer) con necessità di padding arrivando a far pesare l'oggetto \textbf{16 byte}.
-Un oggetto vuoto su sistemi a 64 bit senza Compressed Oops pesa \textbf{16 byte} (mark word + class pointer) senza necessità di padding.
+
+\textbf{Esempi di calcolo per un oggetto vuoto:}
+
+\begin{enumerate}
+    \item \textbf{Architettura 32-bit:}
+    Mark Word (4) + Class Pointer (4) = \textbf{8 byte}.
+    Essendo un multiplo di 8, non serve padding.
+    
+    \item \textbf{Architettura 64-bit (Standard - Compressed Oops attivi):}
+    Mark Word (8) + Class Pointer (4) = 12 byte.
+    Poiché 12 non è multiplo di 8, la JVM aggiunge 4 byte di \textit{Padding}.
+    \textbf{Totale: 16 byte}.
+    
+    \item \textbf{Architettura 64-bit (Senza compressione):}
+    Mark Word (8) + Class Pointer (8) = \textbf{16 byte}.
+    Nessun padding necessario.
+\end{enumerate}
 \end{deepdive}
 
 \begin{center}
@@ -2724,308 +2733,795 @@ Caratteristiche:
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
+\chapter{Gestione dei Dati: Identità, Uguaglianza e Immutabilità}
 
-\chapter{Il Contratto Fondamentale: Object Methods}
 
-Ogni classe in Java estende implicitamente \texttt{java.lang.Object}. Questa classe madre definisce metodi che regolano il comportamento degli oggetti nelle collezioni e nel debug. Ignorare il loro funzionamento porta a bug impossibili da tracciare.
+In Java, ogni classe estende implicitamente \texttt{java.lang.Object}. Questo significa che non esistono oggetti "nudi": ogni istanza porta con sé un'eredità di metodi fondamentali che definiscono come l'oggetto si comporta nelle collezioni, nella sincronizzazione e nel debug.
 
-\section{Il metodo \texttt{hashCode()} e il contratto con \texttt{equals()}}
+Ignorare il funzionamento di questi metodi è la causa principale di memory leak nelle cache (es. HashMap) e di bug logici difficili da tracciare.
 
-In Java, il metodo \texttt{hashCode()} restituisce un valore intero (\texttt{int}) che rappresenta l'istanza dell'oggetto sotto forma numerica. È fondamentale comprendere che questo valore \textbf{non è un indirizzo di memoria} (necessariamente) né un identificatore univoco assoluto, ma un valore calcolato a partire dai dati dello stato dell'oggetto.
+\section{La Classe java.lang.Object}
 
-L'obiettivo principale di questo metodo è le performance: permette alle collezioni basate su tabelle hash (come \texttt{HashMap}, \texttt{HashSet} e \texttt{Hashtable}) di indicizzare e recuperare gli oggetti in tempo costante, o $O(1)$ nel caso medio.
+Prima di approfondire i contratti specifici, ecco una panoramica di tutti i metodi esposti da \texttt{Object}.
+Durante i colloqui, una domanda frequente per testare la conoscenza della libreria standard è: \textit{"A parte equals e toString, quali altri metodi della classe Object conosci?"}.
 
-\subsection*{Il funzionamento nelle Hash Map}
-Queste strutture dati utilizzano il valore restituito da \texttt{hashCode()} per calcolare l'indice di un \emph{bucket} (un "secchio") in un array interno. Il processo di inserimento o ricerca segue questi step logici:
+\begin{center}
+\rowcolors{2}{gray!10}{white}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\rowcolor{deepblue} \textbf{\textcolor{white}{Metodo}} & \textbf{\textcolor{white}{Descrizione}} \\
+\hline
+\texttt{equals(Object obj)} & Determina l'uguaglianza logica tra due oggetti. \\
+\hline
+\texttt{hashCode()} & Restituisce un intero rappresentativo, fondamentale per le Hash Tables. \\
+\hline
+\texttt{toString()} & Restituisce la rappresentazione stringa dell'oggetto. Essenziale per il logging e il debug. \\
+\hline
+\texttt{getClass()} & Restituisce l'oggetto \texttt{Class<?>} a runtime (Reflection). È un metodo \texttt{final}, quindi non sovrascrivibile. \\
+\hline
+\texttt{clone()} & Crea e restituisce una copia dell'oggetto. Spesso sconsigliato in favore dei costruttori di copia. \\
+\hline
+\texttt{wait()}, \texttt{notify()}, \texttt{notifyAll()} & Primitive di basso livello per la sincronizzazione dei Thread. \\
+\hline
+\texttt{finalize()} & \textbf{DEPRECATO} (da Java 9). Non usarlo mai per rilasciare risorse; non c'è garanzia che venga chiamato dal Garbage Collector. \\
+\hline
+\end{tabularx}
+\end{center}
 
+\section{Identità vs Uguaglianza}
+
+
+Prima di scrivere codice, bisogna distinguere filosoficamente due concetti che spesso i principianti confondono:
 \begin{enumerate}
-    \item \textbf{Calcolo dell'Hash}: Viene invocato \texttt{hashCode()} sull'oggetto chiave.
-    \item \textbf{Individuazione Bucket}: Il sistema converte l'hash in un indice dell'array (solitamente tramite operazione modulo).
-    \item \textbf{Verifica Uguaglianza}:
+    \item \textbf{Identità (Reference Equality):} Due variabili puntano allo stesso indirizzo di memoria fisico? Sono lo stesso oggetto?
+    \item \textbf{Uguaglianza (Logical Equality):} Due oggetti, pur essendo distinti in memoria, contengono gli stessi dati significativi (es. stesso ID utente)?
+\end{enumerate}
+
+\begin{interview}{== vs .equals()}
+    \textbf{Domanda:} "Qual è la differenza tra l'operatore \texttt{==} e il metodo \texttt{.equals()}?"
+    
+    \textbf{Risposta:}
     \begin{itemize}
-        \item Se il bucket è vuoto, l'oggetto viene inserito.
-        \item Se il bucket contiene già altri oggetti (fenomeno detto \emph{collisione}), Java scorre la lista presente in quel bucket usando il metodo \texttt{equals()} per verificare se l'oggetto esiste già.
+        \item \textbf{\texttt{==}} controlla l'\textbf{Identità}. Restituisce \texttt{true} solo se i due riferimenti (puntatori) puntano esattamente alla stessa locazione di memoria nello Heap.
+        \item \textbf{\texttt{.equals()}} controlla l'\textbf{Uguaglianza Logica}.
+        \begin{itemize}
+            \item L'implementazione di default in \texttt{Object} usa \texttt{==} (quindi controlla l'identità).
+            \item Nelle classi Java standard (es. \texttt{String}, \texttt{Integer}) e nelle tue classi di dominio (DTO, Entity), deve essere sovrascritto per confrontare il \textbf{contenuto} (i campi interni).
+        \end{itemize}
+    \end{itemize}
+\end{interview}
+
+\begin{deepdive}{String Pool e l'inganno del ==}
+    Le stringhe in Java sono speciali.
+    \begin{itemize}
+        \item \texttt{String a = "ciao";}
+        \item \texttt{String b = "ciao";}
+    \end{itemize}
+    In questo caso \texttt{a == b} potrebbe restituire \texttt{true} grazie allo \textit{String Pool} (ottimizzazione della JVM che riusa le stringhe letterali).
+    Tuttavia, se scrivi \texttt{String c = new String("ciao");}, allora \texttt{a == c} sarà \textbf{false}, mentre \texttt{a.equals(c)} sarà \textbf{true}.
+    
+    \textbf{Regola d'oro:} Per confrontare oggetti (incluse le Stringhe), usa \textbf{sempre} \texttt{.equals()}. Usa \texttt{==} solo per i tipi primitivi o per controllare se un riferimento è \texttt{null}.
+\end{deepdive}
+
+\section{Il Contratto HashCode e le Collezioni}
+
+Se decidi di sovrascrivere \texttt{equals()}, firmi un contratto implicito ma vincolante: \textbf{DEVI sovrascrivere anche \texttt{hashCode()}}.
+
+Le strutture dati più usate in Java (\texttt{HashMap}, \texttt{HashSet}, \texttt{Hashtable}) basano la loro efficienza su questo legame. Se lo rompi, le collezioni smettono di funzionare correttamente (perdono i dati), anche se il codice compila senza errori.
+
+\subsection{Come funziona una HashMap (Dietro le quinte)}
+Una HashMap non è magia: è essenzialmente un \textbf{Array} di liste (o alberi, da Java 8). Ogni posizione dell'array è chiamata \textbf{Bucket} (Secchio).
+
+Il processo di inserimento/ricerca segue questi step:
+\begin{enumerate}
+    \item \textbf{Hashing:} Viene invocato \texttt{key.hashCode()}. Il risultato viene trasformato in un indice dell'array (es. \texttt{hash \% arrayLength}).
+    \item \textbf{Individuazione:} Si va al bucket corrispondente.
+    \item \textbf{Confronto:}
+    \begin{itemize}
+        \item Se il bucket è vuoto: inserisce l'oggetto.
+        \item Se c'è già qualcosa (\textbf{Collisione}): scorre la lista di oggetti presenti usando \texttt{equals()} per vedere se la chiave esiste già (aggiornamento) o se è nuova (aggiunta in coda).
     \end{itemize}
 \end{enumerate}
 
-\section{Equals() e HashCode(): La regola d'oro}
+\begin{center}
+\begin{tikzpicture}[
+    scale=0.9, transform shape,
+    font=\small\sffamily,
+    bucket/.style={rectangle, draw=deepblue, fill=white, minimum width=3cm, minimum height=1.2cm, align=center, rounded corners, line width=0.8pt},
+    arrow/.style={->, >=stealth, thick, deepblue}
+]
 
-Il metodo \texttt{equals()} definisce l'\textbf{uguaglianza logica}, mentre \texttt{hashCode()} serve a distribuire gli oggetti nei "bucket" delle collezioni basate su Hash (HashMap, HashSet).
+    % Array di Buckets
+    \node[bucket, label=left:\textbf{Idx 0}] (b0) at (0, 4.5) {\textit{Empty}};
+    \node[bucket, label=left:\textbf{Idx 1}] (b1) at (0, 2.5) {\textbf{COLLISIONE!}\\ \texttt{[Key A] $\to$ [Key B]}};
+    \node[bucket, label=left:\textbf{Idx 2}] (b2) at (0, 0.5) {\texttt{Key C}};
+    
+    % Logica
+    \node[right=3cm of b0] (obj) {\textbf{Oggetto "Key B"}};
+    
+    % Frecce logiche
+    \draw[arrow] (obj) -- node[right = 0.5 cm, align=left, font=\footnotesize] {1. \texttt{hashCode()} calcola\\Indice 1} (b1.east);
+    
+    % Spiegazione testuale laterale
+    \node[below=2cm of obj, text width=6cm, align=left, font=\footnotesize, draw=gray, dashed, inner sep=5pt, rounded corners] {
+        \textbf{Flusso di Inserimento Key B:}
+        \begin{enumerate}
+            \item Calcolo Hash $\to$ Indice 1.
+            \item Il Bucket 1 non è vuoto (c'è Key A).
+            \item \texttt{KeyB.equals(KeyA)} è \texttt{false}.
+            \item Java accoda Key B alla lista linkata.
+        \end{enumerate}
+    };
 
-\begin{interview}{Differenza tra == e .equals()?}
-\begin{itemize}
-    \item \texttt{==} (Reference Equality): Verifica se due variabili puntano allo \textbf{stesso indirizzo di memoria} (stesso oggetto fisico).
-    \item \texttt{.equals()} (Logical Equality): Verifica se due oggetti hanno lo \textbf{stesso contenuto}.
-\end{itemize}
-\textbf{Nota:} L'implementazione di default di \texttt{Object.equals()} usa \texttt{==}. Dobbiamo farne l'Override per dare un senso logico (es. due \texttt{Utente} sono uguali se hanno lo stesso ID).
+\end{tikzpicture}
+\end{center}
+
+\begin{deepdive}{Le 3 Regole del Contratto HashCode}
+    Secondo la specifica Java, un'implementazione corretta deve rispettare queste regole:
+    
+    \begin{enumerate}
+        \item \textbf{Coerenza (Consistency):} Se chiamo \texttt{hashCode()} più volte sullo stesso oggetto (senza modificarne i campi), deve restituire sempre lo stesso numero.
+        \item \textbf{Uguaglianza implica Hash uguale:} Se \texttt{a.equals(b)} è \texttt{true}, allora \texttt{a.hashCode()} DEVE essere uguale a \texttt{b.hashCode()}. \textit{(Questa è la regola più violata).}
+        \item \textbf{Hash uguale NON implica Uguaglianza:} Se \texttt{a.hashCode() == b.hashCode()}, non è detto che \texttt{equals} sia true. Questo fenomeno si chiama \textbf{Collisione} ed è gestito dalla HashMap, ma troppe collisioni degradano le performance da $O(1)$ a $O(n)$.
+    \end{enumerate}
+\end{deepdive}
+
+\begin{interview}{Il bug della HashMap silenziosa}
+    \textbf{Scenario:} Hai una classe \texttt{Utente} con campo \texttt{id}. Fai l'override solo di \texttt{equals} (dicendo che due utenti sono uguali se hanno lo stesso ID).
+    
+    \begin{itemize}
+        \item Inserisci: \texttt{map.put(new Utente(1), "Dati");}
+        \item Cerchi: \texttt{map.get(new Utente(1));}
+    \end{itemize}
+    
+    \textbf{Domanda:} Cosa restituisce la mappa?
+    
+    \textbf{Risposta:} Restituisce \texttt{null}.
+    \textbf{Perché?} Non avendo sovrascritto \texttt{hashCode}, i due oggetti (pur avendo ID 1) hanno hashcode nativi diversi (basati sull'indirizzo di memoria). La HashMap guarda nel "secchio" sbagliato e non trova l'oggetto, senza nemmeno provare a chiamare \texttt{equals}.
 \end{interview}
 
-\begin{deepdive}{Il Contratto HashCode-Equals}
-Se fai l'Override di \texttt{equals}, DEVI fare l'Override anche di \texttt{hashCode}. Violando questo contratto, distruggi le HashMap.
+\section{Immutabilità}
 
-\textbf{Le 3 Regole:}
+Una classe si definisce \textbf{Immutabile} quando il suo stato non può essere modificato in alcun modo dopo che l'oggetto è stato costruito.
+Esempi classici nel JDK sono \texttt{String}, \texttt{Integer}, \texttt{BigDecimal}.
+
+\subsection{Perché è fondamentale?}
+Ci sono due motivi principali per cui i DTO (Data Transfer Objects) e le Value Classes dovrebbero essere immutabili:
+
 \begin{enumerate}
-    \item Se \texttt{a.equals(b)} è \texttt{true}, allora \texttt{a.hashCode()} deve essere uguale a \texttt{b.hashCode()}.
-    \item Se \texttt{a.hashCode()} è diverso da \texttt{b.hashCode()}, allora \texttt{a.equals(b)} deve essere \texttt{false}.
-    \item Se \texttt{a.hashCode() == b.hashCode()}, NON è detto che \texttt{equals} sia true. Questa si chiama \textbf{Collisione Hash}.
+    \item \textbf{Thread Safety:} Un oggetto immutabile è automaticamente thread-safe. Può essere letto da mille thread contemporaneamente senza bisogno di sincronizzazione, perché nessuno può cambiarne lo stato.
+    \item \textbf{Chiavi delle HashMap:} Questa è la regola d'oro. \textbf{Le chiavi di una Mappa non devono mai cambiare.}
 \end{enumerate}
-\end{deepdive}
 
-\begin{interview}{Scenario: Cosa succede se non sovrascrivo hashCode()?}
-Scenario: Hai una classe \texttt{Chiave} con un campo \texttt{id}. Fai override solo di \texttt{equals}.
-Inserisci un oggetto in una \texttt{HashMap<Chiave, String>}.
-Successivamente, crei un nuovo oggetto \texttt{Chiave} con lo stesso id e provi a fare \texttt{map.get(nuovaChiave)}.
-
-\textbf{Risultato:} Otterrai \texttt{null}.
-\textbf{Perché?} La HashMap usa l'hashcode per trovare il "bucket" dove cercare. Senza override, i due oggetti hanno hashcode nativi (di memoria) diversi. La mappa guarda nel bucket sbagliato e non trova nulla, anche se \texttt{equals} avrebbe restituito true.
+\begin{interview}{Il problema delle chiavi mutabili}
+    \textbf{Domanda:} "Cosa succede se uso un oggetto mutabile come chiave di una HashMap e poi ne modifico un campo?"
+    
+    \textbf{Risposta:} Perdi l'oggetto.
+    \begin{itemize}
+        \item Quando inserisci l'oggetto, viene calcolato l'hash (es. 10) e l'oggetto finisce nel Bucket 10.
+        \item Se modifichi un campo dell'oggetto, il suo \texttt{hashCode()} cambia (es. diventa 55).
+        \item Quando cerchi l'oggetto, la Map calcola il nuovo hash (55), guarda nel Bucket 55, ma l'oggetto è fisicamente rimasto nel Bucket 10!
+        \item Risultato: \texttt{get()} restituisce \texttt{null}, anche se l'oggetto è dentro la mappa. Si crea un memory leak.
+    \end{itemize}
 \end{interview}
 
-\section{ToString() e Clone(): Best practices}
+\subsection{Come creare una Classe Immutabile (La Checklist)}
+Per rendere una classe immutabile, non basta togliere i setter. Bisogna seguire una ricetta precisa per garantire la "Deep Immutability".
 
-\subsection{toString()}
-Sembra banale, ma un buon \texttt{toString()} salva la vita nei log.
-\textbf{Consiglio:} Usa librerie come Lombok (\texttt{@ToString}) per generarlo automaticamente ed evitare di avere log illeggibili come \texttt{Utente@74a14482}.
-
-\subsection{Clone() e l'interfaccia Cloneable}
-Il metodo \texttt{clone()} è considerato "broken" da molti architetti Java (incluso Josh Bloch, autore di Effective Java).
-\begin{itemize}
-    \item L'interfaccia \texttt{Cloneable} è un \textit{Marker Interface} (vuota), ma modifica il comportamento del metodo \texttt{protected clone()} di Object.
-    \item Esegue una \textbf{Shallow Copy} (copia superficiale).
-\end{itemize}
-
-\begin{deepdive}{Shallow Copy vs Deep Copy}
-\begin{itemize}
-    \item \textbf{Shallow Copy:} Copia i valori dei campi primitivi e i \textit{riferimenti} agli oggetti. Se l'oggetto originale ha una lista, la copia punterà alla \textit{stessa} lista. Modificare la lista nella copia distrugge l'originale.
-    \item \textbf{Deep Copy:} Copia ricorsivamente tutto l'albero degli oggetti. Gli oggetti sono totalmente disaccoppiati.
-\end{itemize}
-\textbf{Best Practice:} Evita \texttt{clone()}. Usa un \textbf{Copy Constructor} (es. \texttt{public Utente(Utente other)}) per avere il controllo totale sulla copia profonda.
-\end{deepdive}
-
-\section{Immutable Objects: Come creare una classe immutabile}
-
-Le classi immutabili (come \texttt{String}, \texttt{Integer}, \texttt{BigDecimal}) sono fondamentali per la programmazione concorrente e per l'uso come chiavi di Mappe.
-
-\begin{interview}{Come creeresti una classe immutabile da zero?}
-Questa è una checklist da seguire passo-passo:
 \begin{enumerate}
-    \item Dichiarare la classe \texttt{final} (per impedire l'ereditarietà e l'overriding dei metodi).
-    \item Rendere tutti i campi \texttt{private} e \texttt{final} (assegnati una sola volta).
+    \item Dichiarare la classe \texttt{final} (per impedire che una sottoclasse malevola sovrascriva i metodi e aggiunga stato mutabile).
+    \item Rendere tutti i campi \texttt{private} e \texttt{final} (devono essere assegnati nel costruttore).
     \item Non fornire nessun metodo \textbf{Setter}.
-    \item Inizializzare tutti i campi tramite il costruttore.
-    \item \textbf{Attenzione ai campi mutabili:} Se la classe contiene un riferimento a un oggetto mutabile (es. \texttt{Date} o \texttt{List}), il costruttore deve farne una \textbf{Deep Copy} prima di assegnarlo, e il getter deve restituire una copia (Defensive Copying).
+    \item \textbf{Defensive Copying:} Se la classe contiene campi che sono oggetti mutabili (come \texttt{Date} o \texttt{List}), non bisogna mai restituire o assegnare il riferimento diretto.
 \end{enumerate}
 
-\begin{lstlisting}[caption=Esempio Classe Immutabile Corretta]
-public final class ImmutablePerson {
-    private final String nome; // String e' gia' immutabile
-    private final Date dataNascita; // Date e' MUTABILE!
+\begin{deepdive}{Deep Dive: Defensive Copying}
+    Molti candidati cadono su questo punto.
+    Se la tua classe ha un campo \texttt{private final Date data;}, il campo è final (il riferimento non cambia), ma l'oggetto \texttt{Date} interno è mutabile (ha il metodo \texttt{setTime()}).
+    
+    Se restituisci \texttt{return this.data;} nel getter, chi chiama il metodo può modificare la data interna del tuo oggetto "immutabile"!
+    
+    \textbf{Soluzione:}
+    \begin{itemize}
+        \item \textbf{In Ingresso (Costruttore):} Crea una copia dei dati ricevuti.
+        \item \textbf{In Uscita (Getter):} Restituisci una copia dei dati interni.
+    \end{itemize}
+\end{deepdive}
 
-    public ImmutablePerson(String nome, Date dataNascita) {
-        this.nome = nome;
-        // Defensive Copy in ingresso
-        this.dataNascita = new Date(dataNascita.getTime());
+\begin{lstlisting}[language=Java, caption=Immutabilità Corretta con Defensive Copy]
+public final class ImmutableUser {
+    private final String username;    // String è immutabile, ok.
+    private final Date registration;  // Date è MUTABILE! Attenzione.
+
+    public ImmutableUser(String username, Date registration) {
+        this.username = username;
+        // COPY IN: Se il chiamante modifica la sua variabile 'date' dopo
+        // aver chiamato il costruttore, noi non ne risentiamo.
+        this.registration = new Date(registration.getTime());
     }
 
-    public String getNome() { return nome; }
+    public String getUsername() {
+        return username;
+    }
 
-    public Date getDataNascita() {
-        // Defensive Copy in uscita
-        return new Date(dataNascita.getTime());
+    public Date getRegistration() {
+        // COPY OUT: Se il chiamante usa setTime() sulla data ricevuta,
+        // modifica la sua copia, non il nostro stato interno.
+        return new Date(this.registration.getTime());
     }
 }
 \end{lstlisting}
+
+\section{Java Records (Modern Java)}
+
+Fino a Java 14, creare una semplice classe immutabile per trasportare dati (DTO) richiedeva decine di righe di codice ripetitivo (\textit{boilerplate}): campi privati, costruttore, getter, \texttt{equals}, \texttt{hashCode} e \texttt{toString}.
+
+Java 14 (diventato standard in Java 16) ha introdotto i \textbf{Record}.
+Un Record è una classe speciale il cui scopo principale è essere un "\textit{trasportatore trasparente di dati immutabili}".
+
+\subsection{Sintassi e Funzionalità}
+Con una sola riga di codice, il compilatore genera tutto ciò che serve.
+
+\begin{lstlisting}[language=Java, caption=Definizione di un Record]
+// Sintassi concisa: definisce campi e costruttore in una riga
+public record UserRecord(String username, int age) {}
+\end{lstlisting}
+
+Dietro le quinte, il compilatore trasforma quella riga in una classe \texttt{final} con:
+\begin{itemize}
+    \item Due campi \texttt{private final} (\texttt{username}, \texttt{age}).
+    \item Un \textbf{Costruttore Canonico} che inizializza tutti i campi.
+    \item Metodi di accesso (senza prefisso \texttt{get}, es. \texttt{.username()}, \texttt{.age()}).
+    \item Implementazioni corrette e performanti di \texttt{equals()}, \texttt{hashCode()} e \texttt{toString()}.
+\end{itemize}
+
+\begin{interview}{Record vs Classi Tradizionali}
+    \textbf{Domanda:} "Posso aggiungere metodi o logica a un Record?"
+    
+    \textbf{Risposta:} Sì, ma con limitazioni strutturali per preservare l'immutabilità.
+    \begin{itemize}
+        \item Puoi aggiungere metodi statici o di istanza per logica di business leggera.
+        \item Puoi implementare interfacce.
+        \item \textbf{NON} puoi estendere altre classi (il Record estende già implicitamente \texttt{java.lang.Record}).
+        \item \textbf{NON} puoi aggiungere campi di istanza extra che non siano elencati nella dichiarazione del record.
+    \end{itemize}
+\end{interview}
+
+\subsection{Validazione: Il Compact Constructor}
+Un dubbio comune è: \textit{"Se il costruttore è automatico, come faccio a validare che l'username non sia null?"}.
+I Record supportano una sintassi speciale chiamata \textbf{Compact Constructor}.
+
+Non devi ripetere i parametri e le assegnazioni (\texttt{this.x = x}). Scrivi solo la logica di controllo.
+
+\begin{lstlisting}[language=Java, caption=Compact Constructor per la validazione]
+public record UserRecord(String username, int age) {
+    
+    // Niente parentesi con argomenti qui!
+    public UserRecord {
+        Objects.requireNonNull(username, "L'username è obbligatorio");
+        
+        if (age < 0) {
+            throw new IllegalArgumentException("L'età non può essere negativa");
+        }
+        
+        // Non serve scrivere this.age = age; lo fa Java in automatico alla fine.
+    }
+}
+\end{lstlisting}
+
+\begin{deepdive}{Record vs Lombok}
+    Molti progetti usano la libreria \textbf{Lombok} (\texttt{@Data}, \texttt{@Value}) per ridurre il codice.
+    Tuttavia, i Record sono ora la scelta preferibile perché:
+    \begin{enumerate}
+        \item Sono \textbf{Nativi}: Non richiedono plugin nell'IDE o dipendenze nel \texttt{pom.xml}.
+        \item Sono \textbf{Semantici}: Java sa che un Record è solo dati. Questo permette ottimizzazioni future e serializzazione sicura.
+    \end{enumerate}
+\end{deepdive}
+
+\section{Copia degli Oggetti}
+
+In Java, l'operatore di assegnazione \texttt{=} non crea mai una copia dell'oggetto, ma copia solo il \textbf{riferimento}.
+\begin{verbatim}
+User u1 = new User("Mario");
+User u2 = u1; // u2 e u1 puntano allo STESSO oggetto in memoria
+\end{verbatim}
+Se modifichi \texttt{u2}, modifichi anche \texttt{u1}.
+Quando serve duplicare un oggetto (es. per il pattern Defensive Copy), abbiamo due strade: il metodo \texttt{clone()} o i Costruttori di Copia.
+
+\subsection{Perché evitare clone()}
+Il metodo \texttt{clone()} e l'interfaccia \texttt{Cloneable} sono considerati un errore di design nelle prime versioni di Java (persino da Joshua Bloch, autore di \textit{Effective Java}).
+
+I problemi principali sono:
+\begin{enumerate}
+    \item \textbf{Contratto confuso:} \texttt{Cloneable} è un'interfaccia vuota (Marker Interface), ma se non la implementi, il metodo \texttt{clone()} lancia un'eccezione controllata (\texttt{CloneNotSupportedException}).
+    \item \textbf{Shallow Copy (Copia Superficiale):} Questa è la trappola mortale. L'implementazione di default di \texttt{clone()} copia i valori dei campi bit-per-bit.
+\end{enumerate}
+
+\begin{deepdive}{Shallow Copy vs Deep Copy}
+    Immagina un oggetto \texttt{Manager} che contiene una lista di \texttt{Impiegati}.
+    
+    \begin{itemize}
+        \item \textbf{Shallow Copy (clone standard):} Crea un nuovo oggetto \texttt{Manager}, ma copia il \textit{riferimento} alla lista degli impiegati.
+        \textit{Risultato:} Il clone e l'originale condividono la \textbf{stessa} lista. Se il clone aggiunge un impiegato, questo appare anche nella lista dell'originale. Disastroso.
+        
+        \item \textbf{Deep Copy (Copia Profonda):} Crea un nuovo \texttt{Manager} E crea anche una \textbf{nuova} lista di impiegati, copiando i dati uno a uno.
+        \textit{Risultato:} I due oggetti sono totalmente disaccoppiati.
+    \end{itemize}
+\end{deepdive}
+
+\subsection{La Soluzione: Copy Constructor}
+L'approccio standard e sicuro nell'industria è ignorare \texttt{clone()} e creare un costruttore che accetta un'istanza della stessa classe.
+Questo ti dà il controllo totale sulla profondità della copia.
+
+\begin{lstlisting}[language=Java, caption=Copy Constructor (Best Practice)]
+public class Project {
+    private String name;
+    private List<String> tasks; // Oggetto mutabile!
+
+    // Costruttore standard
+    public Project(String name, List<String> tasks) {
+        this.name = name;
+        this.tasks = new ArrayList<>(tasks);
+    }
+
+    // COPY CONSTRUCTOR
+    public Project(Project other) {
+        this.name = other.name; // String è immutabile, ok copiare il riferimento
+        
+        // DEEP COPY manuale della lista
+        // Creiamo una NUOVA lista contenente gli stessi elementi
+        this.tasks = new ArrayList<>(other.tasks);
+        
+        // Nota: Se la lista contenesse oggetti complessi (non String),
+        // dovremmo ciclare e clonare anche quelli!
+    }
+}
+\end{lstlisting}
+
+\begin{interview}{Librerie per la Deep Copy}
+    \textbf{Domanda:} "Se ho un oggetto molto complesso con 50 campi annidati, devo scrivere il Copy Constructor a mano?"
+    
+    \textbf{Risposta:} No. In produzione si usano spesso scorciatoie basate sulla serializzazione:
+    \begin{enumerate}
+        \item \textbf{JSON:} Serializzi l'oggetto in una stringa JSON e lo deserializzi subito in un nuovo oggetto (usando Jackson o Gson). È lento ma sicuro.
+        \item \textbf{Librerie:} Usare \texttt{Apache Commons Lang} (\texttt{SerializationUtils.clone()}).
+    \end{enumerate}
 \end{interview}
 
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
+\chapter{Java Core Essentials}
 
-\chapter{Gestione Avanzata dei Dati: Stringhe e Array}
+In questo capitolo analizziamo i mattoni fondamentali del linguaggio. Non si tratta semplici contenitori di dati, ma di classi con comportamenti di memoria e performance specifici.
+Ogni sviluppatore Senior deve conoscere cosa succede "sotto il cofano" di Stringhe, Wrapper e Array per evitare colli di bottiglia e bug silenziosi.
 
-La manipolazione del testo e la gestione di collezioni a dimensione fissa sono attività quotidiane. Tuttavia, le ottimizzazioni fatte dalla JVM in questo ambito sono aggressive e conoscerle è fondamentale per evitare sprechi di memoria.
+\section{Stringhe: Architettura e Memoria}
 
-\section{Gestione avanzata delle Stringhe}
+In Java, la classe \texttt{String} è speciale. Pur essendo un oggetto (Reference Type), gode di un supporto linguistico dedicato (letterali tra virgolette, operatore \texttt{+}).
+Tuttavia, la sua gestione della memoria è unica nel suo genere.
 
-In Java, la classe \texttt{String} è speciale. Non è una primitiva, ma gode di un supporto linguistico dedicato (es. l'operatore \texttt{+} e i letterali tra virgolette). Per padroneggiare il Back-End, bisogna capire cosa succede "sotto il cofano".
+\subsection{Anatomia Interna: Compact Strings (Java 9+)}
+Molti pensano ancora che una Stringa sia un array di \texttt{char}. Sebbene vero fino a Java 8, la struttura è cambiata per ottimizzare la RAM.
 
-% ------------------------------------------------
-% DEEP DIVE: STRUTTURA INTERNA
-% ------------------------------------------------
-\begin{deepdive}{Anatomia di una String: Cosa c'è dentro?}
-    Molti pensano che una \texttt{String} sia semplicemente un array di \texttt{char}. Sebbene vero in passato, la struttura è cambiata per ottimizzare l'uso della RAM.
-
+\begin{deepdive}{Da char[] a byte[]}
+    In Java, un \texttt{char} occupa sempre \textbf{2 byte} (UTF-16). Questo significava che una stringa ASCII come "CIAO" occupava 8 byte, di cui 4 erano zeri inutili.
+    
+    Da \textbf{Java 9} in poi, la JVM usa le \textbf{Compact Strings}:
     \begin{itemize}
-        \item \textbf{Fino a Java 8:} La stringa era internamente un array di caratteri (\texttt{char[]}). Poiché in Java un \texttt{char} occupa 2 byte (UTF-16), anche una semplice stringa ASCII come "CIAO" occupava il doppio dello spazio necessario (molti byte erano a zero).
-        
-        \item \textbf{Da Java 9 (Compact Strings):} La struttura interna è passata a un array di byte (\texttt{byte[]}) più un campo \texttt{coder}.
-        \begin{itemize}
-            \item Se la stringa contiene solo caratteri ISO-8859-1 (Latin-1), usa \textbf{1 byte} per carattere.
-            \item Se contiene caratteri speciali (UTF-16), il flag \texttt{coder} cambia e usa \textbf{2 byte} per carattere.
-        \end{itemize}
+        \item Internamente usa un \texttt{byte[]} (1 byte per slot) + un flag \texttt{coder}.
+        \item Se la stringa contiene solo caratteri Latin-1 (ISO-8859-1), usa \textbf{1 byte} per carattere.
+        \item Se contiene caratteri speciali (es. Emoji, Kanji), il \texttt{coder} cambia e usa \textbf{2 byte} (UTF-16).
     \end{itemize}
-    
-    \textbf{Risultato:} Un risparmio medio di memoria dello Heap del 10-15\% nelle applicazioni Enterprise.
+    \textbf{Impatto:} Risparmio medio del 10-15\% di Heap Memory nelle applicazioni Enterprise.
 \end{deepdive}
 
-\begin{deepdive}{Perché la String è Immutabile? (Design Pattern)}
-    L'immutabilità non è un incidente, ma una scelta di design cruciale per quattro motivi:
-    
-    \begin{enumerate}
-        \item \textbf{String Constant Pool:} Permette a Java di risparmiare memoria riutilizzando la stessa istanza per stringhe identiche create come letterali. Se le stringhe fossero mutabili, modificare una variabile cambierebbe il valore per tutte le altre referenze che puntano alla stessa stringa nel Pool.
-        \item \textbf{Sicurezza:} Le stringhe sono usate per parametri critici (path di file, URL, user/password, nomi di classi per il ClassLoader). Se fossero mutabili, un attaccante potrebbe cambiare il contenuto di una stringa dopo i controlli di sicurezza ma prima dell'utilizzo effettivo.
-        \item \textbf{Thread-Safety:} Essendo immutabili, le istanze di \texttt{String} possono essere condivise tra più Thread senza bisogno di sincronizzazione.
-        \item \textbf{HashCode Caching:} Le stringhe sono le chiavi più usate nelle \texttt{HashMap}. Essendo immutabili, il loro \texttt{hashCode()} viene calcolato una volta sola (alla prima chiamata) e poi cachato in una variabile interna \texttt{hash}. Questo rende le performance di lookup nelle mappe estremamente veloci.
-    \end{enumerate}
-\end{deepdive}
+\subsection{Perché la Stringa è Immutabile?}
+L'immutabilità non è un caso, ma una scelta architetturale precisa per quattro motivi:
 
-\begin{interview}{Qual è la differenza tra String - StringBuilder - StringBuffer?}
-    La differenza risiede nella mutabilità e nella gestione della concorrenza.
-    
-    \begin{enumerate}
-        \item \textbf{String (Immutabile):} 
-        Ogni operazione di modifica non altera l'oggetto corrente ma alloca nuova memoria nello Heap.
-        \begin{itemize}
-            \item \emph{Composizione:} \texttt{byte[]} (Java 9+) + hash cache.
-            \item \emph{Uso:} Parametri, DTO, chiavi di Map, costanti.
-        \end{itemize}
-        
-        \item \textbf{StringBuffer (Mutabile, Thread-Safe):} 
-        Classe legacy (Java 1.0).
-        \begin{itemize}
-            \item \emph{Caratteristica:} I suoi metodi (es. \texttt{append}) sono \texttt{synchronized}.
-            \item \emph{Problema:} Il lock di sincronizzazione introduce un overhead inutile nel 99\% dei casi (quando la stringa è locale al metodo).
-            \item \emph{Uso:} Praticamente mai, eccetto rari casi di condivisione tra thread.
-        \end{itemize}
-        
-        \item \textbf{StringBuilder (Mutabile, Non Thread-Safe):} 
-        Introdotta in Java 5 come sostituto veloce di StringBuffer.
-        \begin{itemize}
-            \item \emph{Caratteristica:} Non ha metodi sincronizzati.
-            \item \emph{Uso:} Concatenazioni in loop, costruzione dinamica di JSON/XML/SQL.
-        \end{itemize}
-    \end{enumerate}
-
-    \textbf{Esempio pratico di performance:}
-    Concatenare stringhe in un ciclo \texttt{for} usando l'operatore \texttt{+} su \texttt{String} ha complessità $O(n^2)$ (perché ricopia l'array ogni volta). Usare \texttt{StringBuilder} ha complessità $O(n)$ (l'array interno si ridimensiona in modo intelligente).
-\end{interview}
-
-
-\vspace{0.5cm}
-\textbf{Esempio: Il disastro delle concatenazioni}
-
-\begin{lstlisting}[caption=String vs StringBuilder nel Loop]
-// PESSIMO: Crea centinaia di oggetti intermedi nello Heap
-String s = "";
-for (int i = 0; i < 1000; i++) {
-    s = s + i; // O(n^2)
-}
-
-// OTTIMO: Modifica solo l'array interno
-StringBuilder sb = new StringBuilder();
-for (int i = 0; i < 1000; i++) {
-    sb.append(i); // O(n)
-}
-String result = sb.toString();
-\end{lstlisting}
-
-\section{String Pool e Immutabilità: Perché e Come}
+\begin{enumerate}
+    \item \textbf{String Pool:} Se le stringhe fossero mutabili, modificare una variabile cambierebbe il valore per tutte le altre referenze che puntano alla stessa stringa nel Pool. Sarebbe il caos.
+    \item \textbf{HashCode Caching:} Le stringhe sono le chiavi più usate nelle \texttt{HashMap}. Essendo immutabili, il loro \texttt{hashCode()} viene calcolato \textbf{una volta sola} (alla prima chiamata) e salvato in una variabile interna \texttt{hash}. Questo rende i lookup nelle mappe istantanei.
+    \item \textbf{Sicurezza:} Le stringhe sono usate per caricare classi, aprire file e connessioni database. Se fossero mutabili, un attaccante potrebbe modificare il path del file dopo i controlli di sicurezza ma prima della lettura.
+    \item \textbf{Thread-Safety:} Un oggetto immutabile è automaticamente thread-safe.
+\end{enumerate}
 
 \subsection{Lo String Constant Pool}
-Per risparmiare memoria, la JVM mantiene un'area speciale dello Heap chiamata \textbf{String Pool}.
+Per risparmiare memoria, la JVM mantiene un'area speciale dello Heap (o nel Metaspace in vecchie versioni) chiamata \textbf{String Pool}.
+
+\begin{lstlisting}[language=Java, caption=Pool vs Heap]
+String s1 = "Java";             // Va nel POOL
+String s2 = "Java";             // Riusa l'oggetto nel POOL
+String s3 = new String("Java"); // Crea un NUOVO oggetto nello HEAP
+
+System.out.println(s1 == s2); // true (Stesso indirizzo)
+System.out.println(s1 == s3); // false (Indirizzi diversi)
+\end{lstlisting}
+
+\begin{deepdive}{Il metodo intern()}
+    È possibile spostare manualmente una stringa nel pool invocando \texttt{s3.intern()}.
+    Questo metodo cerca se la stringa esiste già nel pool:
+    \begin{itemize}
+        \item Se sì, restituisce il riferimento del pool.
+        \item Se no, aggiunge la stringa al pool e ne restituisce il riferimento.
+    \end{itemize}
+    Utile per la \textbf{deduplicazione} quando si caricano milioni di stringhe ripetitive da DB o file CSV.
+\end{deepdive}
+
+\subsection{Concatenazione: Performance}
+
+\begin{interview}{String vs StringBuilder vs StringBuffer}
+    \textbf{Domanda:} "Qual è la differenza e quando usare quale?"
+    
+    \textbf{Risposta:}
+    \begin{enumerate}
+        \item \textbf{String:} Immutabile. Ogni \texttt{+} crea un nuovo oggetto. Lento nei loop.
+        \item \textbf{StringBuffer:} Mutabile e \textbf{Synchronized}. Thread-safe ma lento a causa dei lock. Legacy (da non usare quasi mai).
+        \item \textbf{StringBuilder:} Mutabile e \textbf{Non-Synchronized}. Veloce. È lo standard per manipolare testo.
+    \end{enumerate}
+    
+    \textbf{Attenzione ai Loop:}
+    Concatenare con \texttt{+} dentro un ciclo \texttt{for} ha complessità $O(n^2)$ perché ricopia l'array ad ogni iterazione. Usare \texttt{StringBuilder} porta la complessità a $O(n)$.
+\end{interview}
+
+\section{Wrapper Classes e Autoboxing}
+
+Java non è un linguaggio a oggetti "puro" (come Ruby o Smalltalk) perché mantiene i \textbf{tipi primitivi} (\texttt{int}, \texttt{boolean}, \texttt{double}) per motivi di performance.
+Tuttavia, i Generics di Java (\texttt{List<T>}, \texttt{Map<K,V>}) non supportano i primitivi. Non puoi scrivere \texttt{List<int>}.
+
+Per colmare questo divario, Java fornisce le \textbf{Wrapper Classes} (\texttt{Integer}, \texttt{Boolean}, \texttt{Double}, ecc.), che sono oggetti che "avvolgono" il valore primitivo.
+
+\subsection{Autoboxing e Unboxing}
+Dalla versione 5, Java esegue la conversione automatica tra primitivo e wrapper.
 
 \begin{itemize}
-    \item \textbf{Literal (\texttt{"Ciao"}):} La JVM controlla il pool. Se "Ciao" esiste, restituisce il riferimento esistente. Se no, lo crea nel pool.
-    \item \textbf{New Keyword (\texttt{new String("Ciao")}):} Forza la creazione di un \textbf{nuovo} oggetto nello Heap standard, anche se la stringa identica esiste già nel pool. È quasi sempre uno spreco di memoria.
+    \item \textbf{Autoboxing:} Conversione da primitivo a oggetto.
+    \texttt{Integer a = 10;} $\xrightarrow{\text{compila in}}$ \texttt{Integer a = Integer.valueOf(10);}
+    
+    \item \textbf{Unboxing:} Conversione da oggetto a primitivo.
+    \texttt{int b = a;} $\xrightarrow{\text{compila in}}$ \texttt{int b = a.intValue();}
 \end{itemize}
 
-\subsection{Il metodo \texttt{intern()}}
-È possibile spostare manualmente una stringa nel pool invocando \texttt{.intern()}.
-\begin{lstlisting}
-String s1 = new String("Java"); // Nello Heap
-String s2 = s1.intern();        // Nel Pool (o riferimento al pool)
-\end{lstlisting}
-Se usata con saggezza su dataset con molte stringhe duplicate (es. nomi di città in un CSV), questa tecnica può ridurre drasticamente l'uso della RAM (Deduplication).
+\begin{deepdive}{Il rischio NullPointerException (NPE)}
+    L'Unboxing nasconde un'insidia mortale.
+    \begin{lstlisting}[language=Java, basicstyle=\ttfamily\small]
+Integer a = null;
+// Sembra un'assegnazione sicura, ma lancia NPE!
+int b = a; 
+    \end{lstlisting}
+    Poiché l'unboxing invoca \texttt{a.intValue()}, se \texttt{a} è \texttt{null}, l'applicazione va in crash. Questo è un bug frequente quando si lavora con database che ammettono valori NULL su colonne numeriche.
+\end{deepdive}
 
-\section{Array: Gestione, Limitazioni e Memoria}
+\subsection{La Trappola della Integer Cache}
+Questa è una domanda da colloquio "filtro". Serve a capire se il candidato conosce la gestione della memoria o va a caso.
 
-Gli array sono oggetti contenitori a dimensione fissa che memorizzano elementi dello stesso tipo in modo sequenziale (contiguo) in memoria.
+\begin{interview}{Perché 128 diverso da 128?}
+    \textbf{Domanda:} "Analizza questo codice. Cosa viene stampato e perché?"
+    \begin{lstlisting}[language=Java]
+Integer a = 100;
+Integer b = 100;
+System.out.println(a == b); // Stampa TRUE
 
-\subsection{Array di Primitivi vs Oggetti}
+Integer c = 1000;
+Integer d = 1000;
+System.out.println(c == d); // Stampa FALSE
+    \end{lstlisting}
+    
+    \textbf{Risposta:}
+    \begin{itemize}
+        \item \textbf{Il caso 100:} Java mantiene una \textbf{Cache} interna per gli oggetti \texttt{Integer} piccoli (da \textbf{-128 a 127}). Quando scrivi \texttt{Integer a = 100}, Java vede che 100 è nel range e ti restituisce l'istanza già esistente nella cache. Quindi \texttt{a} e \texttt{b} puntano allo stesso oggetto fisico.
+        \item \textbf{Il caso 1000:} 1000 è fuori dal range di cache. Java è costretto a creare due \textbf{nuovi} oggetti nello Heap. Quindi \texttt{c} e \texttt{d} hanno indirizzi di memoria diversi.
+    \end{itemize}
+    
+    \textbf{Lezione:} Mai usare \texttt{==} per confrontare Wrapper Objects. Usa sempre \texttt{.equals()}, che funziona per tutti i valori.
+\end{interview}
+
+\subsection{Costo in Memoria: Primitivi vs Wrapper}
+Usare i Wrapper ha un costo significativo in termini di RAM (Footprint).
+
 \begin{itemize}
-    \item \texttt{int[]}: Contiene i valori interi direttamente in memoria contigua. Molto efficiente per la CPU (Cache locality).
-    \item \texttt{Integer[]}: È un array di \textbf{riferimenti}. Ogni slot punta a un oggetto \texttt{Integer} sparso nello Heap. Meno efficiente a causa dell'overhead degli oggetti e dei salti di memoria.
+    \item \textbf{\texttt{int}:} Occupa \textbf{4 byte} sullo Stack (o nel corpo dell'oggetto).
+    \item \textbf{\texttt{Integer}:} È un oggetto completo.
+    \begin{itemize}
+        \item 16 byte di Header (su 64-bit JVM).
+        \item 4 byte per il valore int.
+        \item Padding per allineamento.
+        \item \textbf{Totale:} Circa \textbf{24 byte} + il riferimento (4-8 byte).
+    \end{itemize}
+\end{itemize}
+
+\textbf{Conclusione:} Un \texttt{int[]} di 1 milione di elementi occupa $\approx$ 4 MB. Un \texttt{Integer[]} (o \texttt{ArrayList<Integer>}) ne occupa oltre 24 MB. Nelle applicazioni ad alte performance, preferire array di primitivi o librerie come \textit{Eclipse Collections} che offrono liste di primitivi.
+
+\section{Enums: Molto più di costanti}
+
+In linguaggi come C o C++, un'enumerazione è poco più di una lista di interi glorificata.
+In Java, \texttt{enum} è una \textbf{Classe} vera e propria (che estende implicitamente \texttt{java.lang.Enum}).
+
+Questo significa che le Enum possono avere:
+\begin{itemize}
+    \item \textbf{Campi di istanza} (stato).
+    \item \textbf{Costruttori} (sempre privati).
+    \item \textbf{Metodi} (concreti o astratti).
+    \item Possono implementare \textbf{Interfacce}.
+\end{itemize}
+
+\subsection{Enum con Stato e Comportamento}
+Un caso d'uso tipico nel backend è mappare codici di stato del database o codici di errore HTTP.
+
+\begin{lstlisting}[language=Java, caption=Enum Avanzata]
+public enum OrderStatus {
+    PENDING(1, "In attesa di pagamento"),
+    SHIPPED(2, "Spedito"),
+    DELIVERED(3, "Consegnato"),
+    CANCELLED(99, "Annullato");
+
+    // Campi final (Best Practice: le enum dovrebbero essere immutabili)
+    private final int dbCode;
+    private final String description;
+
+    // Costruttore (Implicitamente private)
+    OrderStatus(int dbCode, String description) {
+        this.dbCode = dbCode;
+        this.description = description;
+    }
+
+    // Metodo di utility per lookup inverso (da DB a Enum)
+    public static OrderStatus fromCode(int code) {
+        for (OrderStatus status : values()) {
+            if (status.dbCode == code) return status;
+        }
+        throw new IllegalArgumentException("Codice non valido: " + code);
+    }
+}
+\end{lstlisting}
+
+\subsection{Il Singleton Pattern con Enum}
+Questa è una delle domande "Senior" più apprezzate.
+
+\begin{interview}{Qual è il modo più sicuro per creare un Singleton?}
+    \textbf{Domanda:} "Come implementi un Singleton che sia Thread-Safe e resistente alla Serializzazione?"
+    
+    \textbf{Risposta:} Non usare il \textit{Double-Checked Locking} o la \textit{Lazy Initialization} manuale. Usa una \textbf{Enum a singolo elemento}.
+    
+    \begin{lstlisting}[language=Java]
+public enum DatabaseConnection {
+    INSTANCE; // L'unica istanza esistente
+    
+    public void executeQuery(String sql) {
+        // Logica di connessione...
+    }
+}
+    \end{lstlisting}
+    
+    \textbf{Perché è migliore?}
+    \begin{enumerate}
+        \item \textbf{Thread-Safety Gratuita:} La JVM garantisce che le istanze delle Enum vengano create una volta sola, in modo atomico, al caricamento della classe.
+        \item \textbf{Serializzazione Sicura:} Se serializzi e deserializzi un Singleton classico, potresti creare una seconda istanza. Le Enum sono protette nativamente dalla JVM contro questo problema (e anche contro gli attacchi via Reflection).
+    \end{enumerate}
+\end{interview}
+
+\subsection{Enum e il Polimorfismo (Strategy Pattern)}
+Le Enum possono avere metodi astratti. Questo permette a ogni costante di definire un comportamento diverso. È un modo molto elegante di implementare lo \textbf{Strategy Pattern} senza creare decine di file separati.
+
+\begin{lstlisting}[language=Java, caption=Enum con Metodi Astratti]
+public enum Operation {
+    PLUS   { double apply(double x, double y) { return x + y; } },
+    MINUS  { double apply(double x, double y) { return x - y; } },
+    TIMES  { double apply(double x, double y) { return x * y; } },
+    DIVIDE { double apply(double x, double y) { return x / y; } };
+
+    // Ogni costante DEVE implementare questo metodo
+    abstract double apply(double x, double y);
+}
+
+// Uso:
+double result = Operation.PLUS.apply(2, 3); // 5.0
+\end{lstlisting}
+
+\section{Array: Basso livello}
+
+Gli array sono la struttura dati più semplice e vicina all'hardware. In Java, sono oggetti a dimensione fissa che memorizzano elementi dello stesso tipo in modo sequenziale in memoria.
+Nonostante la comodità delle `ArrayList`, gli array sono ancora imbattibili per performance pura.
+
+\subsection{Efficienza in Memoria: Primitivi vs Oggetti}
+La differenza di layout in memoria tra un array di primitivi e uno di oggetti è drammatica.
+
+\begin{itemize}
+    \item \textbf{\texttt{int[]}:} Contiene i valori grezzi (es. 10, 20, 30) stoccati in un blocco di memoria \textbf{contiguo}. La CPU li adora perché può caricarli nella Cache L1 in blocco, massimizzando la velocità di iterazione.
+    \item \textbf{\texttt{Integer[]}:} È un array di \textbf{riferimenti} (puntatori).
+    \begin{itemize}
+        \item L'array contiene solo indirizzi di memoria.
+        \item Gli oggetti \texttt{Integer} reali sono sparsi ("scattered") casualmente nello Heap.
+        \item Iterare su questo array causa continui salti di memoria (\textit{Cache Miss}), rallentando drasticamente l'esecuzione.
+    \end{itemize}
 \end{itemize}
 
 \subsection{Il trabocchetto della Covarianza}
-\begin{interview}{Array vs Generics: La Covarianza}
-Perché il seguente codice compila ma fallisce a runtime?
-\begin{lstlisting}
-Object[] objArr = new String[10]; // Compila (Covarianza)
-objArr[0] = 100; // ArrayStoreException a Runtime!
-\end{lstlisting}
+Questa è una domanda teorica avanzata che mette in crisi molti sviluppatori.
 
-\textbf{Spiegazione:}
-\begin{itemize}
-    \item Gli Array sono \textbf{Covarianti}: Se \texttt{String} estende \texttt{Object}, allora \texttt{String[]} è sottotipo di \texttt{Object[]}. Questo permette il polimorfismo ma apre a errori di tipo a runtime.
-    \item I Generics (\texttt{List<T>}) sono \textbf{Invarianti}: \texttt{List<String>} \textbf{NON} è sottotipo di \texttt{List<Object>}. Il compilatore bloccherebbe l'assegnazione subito, garantendo la Type Safety.
-\end{itemize}
+\begin{interview}{Array Covarianti vs Generics Invarianti}
+    \textbf{Domanda:} "Perché questo codice compila ma fallisce a runtime?"
+    \begin{lstlisting}[language=Java]
+Object[] objArr = new String[10]; // Compila!
+objArr[0] = 100; // Lancia ArrayStoreException a Runtime
+    \end{lstlisting}
+    
+    \textbf{Risposta:}
+    \begin{itemize}
+        \item Gli \textbf{Array sono Covarianti:} Se \texttt{String} è sottotipo di \texttt{Object}, allora \texttt{String[]} è considerato sottotipo di \texttt{Object[]}. Java ti permette di trattarlo come un array generico, ma a runtime controlla ogni inserimento. Se provi a mettere un \texttt{Integer} in un array che fisicamente è di \texttt{String}, la JVM lancia un'eccezione.
+        \item I \textbf{Generics (\texttt{List<T>}) sono Invarianti:} \texttt{List<String>} \textbf{NON} è sottotipo di \texttt{List<Object>}.
+        Il compilatore blocca subito il codice:
+        \texttt{List<Object> l = new ArrayList<String>(); // ERRORE DI COMPILAZIONE}
+        Questo garantisce la \textbf{Type Safety} a tempo di compilazione, che è molto più sicura.
+    \end{itemize}
 \end{interview}
 
 \subsection{Utility Class: java.util.Arrays}
-Mai reinventare la ruota. Questa classe offre metodi ottimizzati:
+Mai reinventare la ruota. La classe \texttt{Arrays} offre algoritmi altamente ottimizzati.
+
 \begin{itemize}
-    \item \texttt{sort()}: Usa \textbf{Dual-Pivot Quicksort} per i primitivi ($O(n \log n)$, instabile ma veloce) e \textbf{Timsort} (MergeSort + InsertionSort) per gli oggetti (stabile).
-    \item \texttt{binarySearch()}: Ricerca logaritmica su array \textbf{ordinati}.
-    \item \texttt{asList()}: Crea una lista "vista" dell'array (dimensione fissa).
+    \item \textbf{\texttt{sort()}}:\\
+    Usa \textbf{Dual-Pivot Quicksort} per i primitivi (veloce, $O(n \log n)$, instabile).\\
+    Usa \textbf{Timsort} (MergeSort + InsertionSort) per gli oggetti (stabile, garantisce che oggetti uguali mantengano l'ordine relativo).
+    
+    \item \textbf{\texttt{binarySearch()}}:\\
+    Esegue una ricerca logaritmica ($O(\log n)$) su array \textbf{già ordinati}. Se l'array non è ordinato, il risultato è indefinito.
 \end{itemize}
 
+\begin{deepdive}{La trappola di Arrays.asList()}
+    Il metodo \texttt{Arrays.asList(1, 2, 3)} restituisce una \texttt{List}, ma non è una \texttt{java.util.ArrayList} standard!
+    È una classe interna (\texttt{Arrays\$ArrayList}) che fa da "wrapper" (vista) sull'array originale.
+    
+    \textbf{Conseguenze:}
+    \begin{itemize}
+        \item La lista è a \textbf{dimensione fissa}.
+        \item \texttt{get()} e \texttt{set()} funzionano (modificano l'array sottostante).
+        \item \textbf{\texttt{add()} e \texttt{remove()} lanciano \texttt{UnsupportedOperationException}.}
+    \end{itemize}
+    
+    \textbf{Soluzione:} Se vuoi una lista modificabile, avvolgila:
+    \texttt{new ArrayList<>(Arrays.asList(...))}.
+\end{deepdive}
 
-\section{Modern Date \& Time API (Java 8)}
+\section{Date e Tempo (Java Time API)}
 
-Le vecchie classi \texttt{java.util.Date} e \texttt{Calendar} sono piene di problemi: sono mutabili (non thread-safe), hanno indici dei mesi che partono da 0 (Gennaio = 0) e design confuso.
-Java 8 ha introdotto il package \texttt{java.time}, basato su classi \textbf{Immutabili} e \textbf{Thread-Safe}.
+Fino a Java 7, la gestione del tempo era affidata alle classi \texttt{java.util.Date} e \texttt{java.util.Calendar}. Queste classi sono note per essere \textbf{problematiche} sotto ogni punto di vista.
+Java 8 ha introdotto il package \texttt{java.time} (basato su Joda-Time), che risolve definitivamente questi problemi.
 
-\subsection{Le Classi Principali}
+\subsection{Perché java.util.Date è "il male"?}
+Se un intervistatore ti chiede perché non usi \texttt{Date}, ecco i motivi tecnici:
+
+\begin{enumerate}
+    \item \textbf{Mutabilità:} \texttt{Date} è mutabile. Se passi una data a un metodo, quel metodo può cambiarla (usando \texttt{setTime()}) influenzando il chiamante. Questo rompe l'incapsulamento e crea bug di concorrenza.
+    \item \textbf{Non Thread-Safe:} La classe \texttt{SimpleDateFormat} (usata per il parsing) non è thread-safe. Se condivisa in una variabile statica tra più thread, fallisce miseramente lanciando eccezioni strane.
+    \item \textbf{Design Confuso:} Gli anni partono da 1900 (quindi l'anno 2023 è 123), i mesi partono da 0 (Gennaio = 0).
+\end{enumerate}
+
+\subsection{La Rivoluzione di Java 8: java.time}
+Le nuove classi sono \textbf{Immutabili}, \textbf{Thread-Safe} e semanticamente chiare.
+Bisogna scegliere la classe giusta in base al contesto.
 
 \begin{table}[h]
 \centering
-\begin{tabular}{|l|l|l|}
+\rowcolors{2}{gray!10}{white}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|X|}
 \hline
-\textbf{Classe} & \textbf{Cosa contiene} & \textbf{Esempio} \\
+\rowcolor{deepblue} \textbf{\textcolor{white}{Classe}} & \textbf{\textcolor{white}{Cosa Rappresenta}} \\
 \hline
-\texttt{LocalDate} & Solo Data (no ora, no fuso) & Compleanni, Scadenze (\texttt{2023-10-25}) \\
+\texttt{LocalDate} & Solo una data (Anno-Mese-Giorno). Senza orario, senza fuso orario. \textit{Esempio: Compleanno, Scadenza fattura.} \\
 \hline
-\texttt{LocalTime} & Solo Ora (no data) & Orari di apertura (\texttt{14:30:00}) \\
+\texttt{LocalTime} & Solo un orario (Ore-Minuti-Secondi). Senza data. \textit{Esempio: Orario di apertura negozio.} \\
 \hline
-\texttt{LocalDateTime} & Data e Ora (no fuso) & Log eventi locali (\texttt{2023-10-25T14:30}) \\
+\texttt{LocalDateTime} & Data + Orario. Senza fuso orario. \textit{Esempio: Un evento nel calendario personale.} \\
 \hline
-\texttt{ZonedDateTime} & Data, Ora e Fuso Orario & App globali (\texttt{...T14:30+02:00[Europe/Rome]}) \\
+\texttt{ZonedDateTime} & Data + Orario + Fuso Orario. \textit{Esempio: Una riunione internazionale (zoom call).} \\
 \hline
-\texttt{Instant} & Timestamp (UTC) & Momento esatto per la macchina (Epoch) \\
+\texttt{Instant} & Un punto preciso sulla linea temporale (Timestamp UTC). Rappresenta i secondi passati dal 1970 (Epoch). \textit{Uso: Log di sistema, salvataggio su DB.} \\
 \hline
-\end{tabular}
+\end{tabularx}
 \end{table}
 
-\begin{deepdive}{Period vs Duration}
-Spesso chiesto per verificare la conoscenza dell'API:
-\begin{itemize}
-    \item \textbf{Period:} Misura quantità di tempo in termini "umani" (anni, mesi, giorni). Usato con \texttt{LocalDate}.
-    \item \textbf{Duration:} Misura quantità di tempo in termini "macchina" (secondi, nanosecondi). Usato con \texttt{Instant} o \texttt{LocalTime}.
-\end{itemize}
+\subsection{Aritmetica delle Date: Period vs Duration}
+Poiché le classi sono immutabili, ogni operazione di modifica restituisce una \textbf{nuova istanza} (stile \texttt{String}).
+
+\begin{lstlisting}[language=Java, caption=Manipolazione Date]
+LocalDate oggi = LocalDate.now(); 
+// Chaining fluente
+LocalDate scadenza = oggi.plusDays(30).plusMonths(1);
+
+// Parsing Thread-Safe
+DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+LocalDate data = LocalDate.parse("25/12/2023", fmt);
+\end{lstlisting}
+
+\begin{interview}{Period vs Duration}
+    \textbf{Domanda:} "Come calcolo la differenza tra due date?"
+    
+    \textbf{Risposta:} Dipende se vuoi ragionare in termini "umani" o "macchina".
+    \begin{itemize}
+        \item \textbf{Period:} Misura il tempo in Anni, Mesi e Giorni (Human Time). Tiene conto delle irregolarità (anni bisestili, mesi di 30/31 giorni).
+        \textit{Esempio: Tra oggi e il prossimo compleanno.}
+        \item \textbf{Duration:} Misura il tempo in Secondi e Nanosecondi (Machine Time). È una misura fisica esatta.
+        \textit{Esempio: Quanto tempo è durata l'esecuzione di questo metodo?}
+    \end{itemize}
+\end{interview}
+
+\section{Optional e Null Safety}
+
+Il \texttt{NullPointerException} (NPE) è stato definito dal suo inventore, Tony Hoare, come il suo "errore da un miliardo di dollari".
+Prima di Java 8, l'unico modo per evitare crash era riempire il codice di controlli difensivi (\texttt{if (x != null)}).
+
+Java 8 ha introdotto \texttt{java.util.Optional<T>}, un contenitore che può contenere un valore non-null oppure essere vuoto.
+L'obiettivo non è eliminare il \texttt{null} dal linguaggio, ma permettere alle API di esprimere chiaramente l'intento: \textit{"Questo metodo potrebbe non restituire nulla, gestiscilo!"}.
+
+\subsection{L'approccio Funzionale (The Right Way)}
+L'errore del principiante è usare \texttt{Optional} come se fosse un normale controllo null (usando \texttt{isPresent()} e \texttt{get()}).
+L'approccio corretto è usare la catena funzionale.
+
+\begin{lstlisting}[language=Java, caption=Vecchio Stile vs Optional]
+// VECCHIO STILE (Prono a errori)
+User user = repo.findById(1);
+String city = "Sconosciuta";
+if (user != null) {
+    Address addr = user.getAddress();
+    if (addr != null) {
+        city = addr.getCity();
+    }
+}
+
+// STILE MODERNO (Optional)
+String city = repo.findById(1) // Ritorna Optional<User>
+    .map(User::getAddress)     // Se c'è user, prendi address. Se no, salta.
+    .map(Address::getCity)     // Se c'è address, prendi city.
+    .orElse("Sconosciuta");    // Se qualcosa mancava, usa default.
+\end{lstlisting}
+
+\subsection{Best Practices e Anti-Patterns}
+L'\texttt{Optional} va usato con disciplina.
+
+\begin{deepdive}{Dove NON usare Optional}
+    \begin{enumerate}
+        \item \textbf{Mai come parametro di un metodo:}
+        \texttt{void method(Optional<String> s)} è sbagliato. Obbliga il chiamante a wrappare i dati e non ti salva dal fatto che l'\texttt{Optional} stesso potrebbe essere \texttt{null}. Usa l'overloading dei metodi.
+        \item \textbf{Mai come campo di una classe:}
+        \texttt{Optional} non è serializzabile. Se lo metti in un DTO o in una Entity JPA, avrai problemi di serializzazione e spreco di memoria. Usa \texttt{null} per i campi privati e \texttt{Optional} solo nel getter pubblico (se necessario).
+        \item \textbf{Mai nelle Collezioni:}
+        \texttt{List<Optional<String>>} è un abominio. Non mettere valori assenti in una lista; semplicemente non aggiungerli.
+    \end{enumerate}
+    \textbf{Regola:} Usa \texttt{Optional} quasi esclusivamente come \textbf{valore di ritorno} di un metodo.
 \end{deepdive}
 
-\begin{lstlisting}[caption=Manipolazione Date Java 8]
-LocalDate oggi = LocalDate.now();
-LocalDate scadenza = oggi.plusDays(30).plusMonths(1); // Chaining (Immutabile)
+\subsection{Performance: orElse() vs orElseGet()}
+Questa è una domanda sottile sulle performance.
 
-// Parsing e Formatting
-DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-String dataStr = oggi.format(fmt);
-LocalDate dataParsed = LocalDate.parse("25/12/2023", fmt);
+\begin{interview}{Differenza tra orElse e orElseGet}
+    Entrambi forniscono un valore di default se l'Optional è vuoto.
+    
+    \begin{itemize}
+        \item \textbf{\texttt{orElse(T other)}:} Il valore di default viene valutato (istanziato) \textbf{sempre}, anche se l'Optional è pieno.
+        \item \textbf{\texttt{orElseGet(Supplier<? extends T> s)}:} Il valore di default viene valutato \textbf{lazy} (solo se l'Optional è effettivamente vuoto).
+    \end{itemize}
+    
+    \textbf{Esempio:}
+    \begin{verbatim}
+    // "Calcolo pesante..." viene eseguito SEMPRE, anche se opt è pieno!
+    opt.orElse(metodoPesante()); 
 
-// Calcolo differenza
-long giorniTra = ChronoUnit.DAYS.between(oggi, scadenza);
-\end{lstlisting}
+    // "Calcolo pesante..." viene eseguito SOLO se opt è vuoto.
+    opt.orElseGet(() -> metodoPesante());
+    \end{verbatim}
+    
+    \textbf{Consiglio:} Se il default è una stringa costante (""), usa \texttt{orElse}. Se è una chiamata a DB o un oggetto da istanziare, usa \texttt{orElseGet}.
+\end{interview}
+
+\subsection{Metodi da conoscere}
+\begin{itemize}
+    \item \texttt{ifPresent(Consumer)}: Esegui un'azione solo se c'è un valore (es. loggare).
+    \item \texttt{orElseThrow()}: Restituisci il valore o lancia un'eccezione (preferibile a \texttt{get()}, che lancia \texttt{NoSuchElementException} senza un messaggio chiaro).
+    \item \texttt{filter(Predicate)}: Se il valore c'è ma non soddisfa la condizione, l'Optional diventa vuoto.
+\end{itemize}
 
 % -------------------------------------------------------------------
 % CAPITOLO
@@ -5044,7 +5540,8 @@ ExecutorService safePool = new ThreadPoolExecutor(
     10, // Max Pool Size (Thread massimi sotto carico)
     60L, TimeUnit.SECONDS, // Tempo di vita dei thread extra
     new ArrayBlockingQueue<>(500), // CODA LIMITATA a 500 task
-    new ThreadPoolExecutor.CallerRunsPolicy() // Se piena, esegue il chiamante (rallenta il flusso)
+    new ThreadPoolExecutor.CallerRunsPolicy() // Se piena, esegue il chiamante 
+												//(rallenta il flusso)
 );
 \end{verbatim}
 \end{small}
@@ -5077,7 +5574,7 @@ Esistono due modi per passare lavoro al pool. Scegliere quello giusto è importa
 \end{interview}
 
 \subsubsection{2. Spegnimento (Shutdown)}
-Un \texttt{ExecutorService} non è un oggetto normale: contiene thread attivi. Se il tuo programma Java finisce il `main` ma non spegni il pool, la JVM **non si chiuderà mai** (perché i thread del pool sono User Threads, non Daemon).
+Un \texttt{ExecutorService} non è un oggetto normale: contiene thread attivi. Se il tuo programma Java finisce il `main` ma non spegni il pool, la JVM \textbf{non si chiuderà mai} (perché i thread del pool sono User Threads, non Daemon).
 
 Ecco la "Trinità dello Shutdown":
 
