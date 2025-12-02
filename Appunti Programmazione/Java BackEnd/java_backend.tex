@@ -13110,6 +13110,257 @@ public class WeatherService {
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
+\chapter{Esempio Pratico: Architettura Avanzata e Annotazioni}
+
+In questo capitolo dissezioniamo un'applicazione Spring Boot reale. Non ci limiteremo a dire "questa annotazione fa X", ma vedremo cosa succede se la omettiamo o la usiamo male.
+
+Il progetto è un \textbf{Payment Gateway Processor}.
+
+\section{1. L'Entry Point e il Component Scan}
+
+Molti sviluppatori mettono la classe main a caso. Questo è il primo errore architetturale.
+L'annotazione \texttt{@SpringBootApplication} definisce il "Root Package".
+
+\begin{lstlisting}[language=Java, caption=com.enterprise.pay.PaymentApplication.java]
+package com.enterprise.pay; // <--- ROOT PACKAGE
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+
+// 1. @SpringBootApplication:
+//    Include @ComponentScan. Spring scansionerà SOLO questo package
+//    (com.enterprise.pay) e i suoi sotto-package.
+//    Se metti un Service in "com.enterprise.utils", Spring NON lo troverà mai
+//    e lancerà un errore "NoSuchBeanDefinitionException".
+
+// 2. @ConfigurationPropertiesScan:
+//    Invece di usare @EnableConfigurationProperties per ogni singola classe,
+//    diciamo a Spring: "Cerca tutte le classi di configurazione in questo package".
+//    Rende l'architettura più pulita e scalabile.
+@SpringBootApplication
+@ConfigurationPropertiesScan 
+public class PaymentApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(PaymentApplication.class, args);
+    }
+}
+\end{lstlisting}
+
+\section{2. Gestione Configurazioni Type-Safe (@ConfigurationProperties)}
+
+Usare \texttt{@Value("\$\{app.timeout\}")} sparso nel codice è un anti-pattern (Typos, refactoring difficile).
+L'approccio Enterprise è mappare il file \texttt{application.yml} su classi Java (POJO).
+
+\textbf{File: application.properties}
+\begin{verbatim}
+payment.gateway.url=https://api.stripe.com
+payment.gateway.timeout-ms=5000
+payment.gateway.retry-count=3
+\end{verbatim}
+
+\textbf{File Java:}
+
+\begin{lstlisting}[language=Java, caption=config/PaymentProperties.java]
+package com.enterprise.pay.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
+
+// Mappa tutte le properties che iniziano con "payment.gateway"
+// Richiede la validazione dei dati all'avvio (@Validated è implicito se ci sono constraint)
+@ConfigurationProperties(prefix = "payment.gateway")
+public class PaymentProperties {
+
+    @NotBlank // Se nel properties l'URL manca, l'app CRASHA all'avvio (Fail Fast)
+    private final String url;
+    
+    @Positive
+    private final int timeoutMs;
+    
+    private final int retryCount;
+
+    // @ConstructorBinding: Dice a Spring di usare il costruttore per riempire i campi.
+    // Questo ci permette di rendere i campi FINAL (Immutabili).
+    @ConstructorBinding
+    public PaymentProperties(String url, int timeoutMs, int retryCount) {
+        this.url = url;
+        this.timeoutMs = timeoutMs;
+        this.retryCount = retryCount;
+    }
+
+    // Solo Getters (l'oggetto è immutabile)
+    public String getUrl() { return url; }
+    public int getTimeoutMs() { return timeoutMs; }
+    public int getRetryCount() { return retryCount; }
+}
+\end{lstlisting}
+
+\begin{deepdive}{Perché questa classe è un Bean?}
+    Anche se non ha \texttt{@Component}, questa classe diventa un Bean gestito da Spring grazie all'annotazione \texttt{@ConfigurationPropertiesScan} messa nel Main. Ora possiamo iniettare \texttt{PaymentProperties} ovunque serva.
+\end{deepdive}
+
+\section{3. Configurazione Esplicita (@Configuration e @Bean)}
+
+A volte dobbiamo configurare classi che \textbf{non abbiamo scritto noi} (es. librerie esterne). Non possiamo aprire il codice di una libreria e scriverci sopra \texttt{@Component}.
+Qui entra in gioco \texttt{@Configuration}.
+
+Immaginiamo di dover configurare un \texttt{HttpClient} esterno.
+
+\begin{lstlisting}[language=Java, caption=config/HttpClientConfig.java]
+package com.enterprise.pay.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import java.net.http.HttpClient;
+import java.time.Duration;
+
+@Configuration // Questa classe è una fabbrica di Bean
+public class HttpClientConfig {
+
+    // @Bean: Istruisce Spring su come creare un oggetto che non è nostro.
+    // Il nome del metodo ("secureHttpClient") diventa il nome del Bean nel contesto.
+    @Bean
+    public HttpClient secureHttpClient(PaymentProperties props) {
+        // Qui usiamo la configurazione type-safe iniettata da Spring
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(props.getTimeoutMs()))
+                .version(HttpClient.Version.HTTP_2)
+                .build();
+    }
+}
+\end{lstlisting}
+
+\section{4. Logica Condizionale (@ConditionalOnProperty)}
+
+Vogliamo che il sistema supporti due strategie: PayPal e Carta di Credito.
+Vogliamo attivare l'una o l'altra cambiando solo una riga nel file properties, senza toccare il codice e senza usare i Profili (che sono troppo generici).
+
+\textbf{Interfaccia:}
+\begin{lstlisting}[language=Java]
+public interface PaymentStrategy {
+    void pay(double amount);
+}
+\end{lstlisting}
+
+\textbf{Implementazione A (Attivata da flag):}
+
+\begin{lstlisting}[language=Java, caption=strategy/PaypalStrategy.java]
+package com.enterprise.pay.strategy;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+
+@Service
+// Questo Bean viene creato SOLO SE in application.properties c'è:
+// app.feature.payment-mode=paypal
+@ConditionalOnProperty(
+    name = "app.feature.payment-mode", 
+    havingValue = "paypal"
+)
+public class PaypalStrategy implements PaymentStrategy {
+    @Override
+    public void pay(double amount) {
+        System.out.println("Pagamento via PayPal: " + amount);
+    }
+}
+\end{lstlisting}
+
+\textbf{Implementazione B (Fallback):}
+
+\begin{lstlisting}[language=Java, caption=strategy/CreditCardStrategy.java]
+package com.enterprise.pay.strategy;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
+
+@Service
+// matchIfMissing = true -> Se non specifico nulla, uso la Carta di Credito
+@ConditionalOnProperty(
+    name = "app.feature.payment-mode", 
+    havingValue = "credit_card", 
+    matchIfMissing = true
+)
+public class CreditCardStrategy implements PaymentStrategy {
+    @Override
+    public void pay(double amount) {
+        System.out.println("Pagamento via Carta di Credito: " + amount);
+    }
+}
+\end{lstlisting}
+
+\section{5. Cablaggio Finale (Injection)}
+
+Ora mettiamo tutto insieme nel Service. Notare come Spring risolve le dipendenze in modo intelligente.
+
+\begin{lstlisting}[language=Java, caption=service/PaymentService.java]
+package com.enterprise.pay.service;
+
+import com.enterprise.pay.config.PaymentProperties;
+import com.enterprise.pay.strategy.PaymentStrategy;
+import org.springframework.stereotype.Service;
+import java.net.http.HttpClient;
+
+@Service
+public class PaymentService {
+
+    private final PaymentStrategy strategy;
+    private final PaymentProperties properties;
+    private final HttpClient httpClient;
+
+    // COSTRUCTOR INJECTION
+    // Spring fa questo ragionamento:
+    // 1. strategy: Cerca il bean attivo. Grazie a @ConditionalOnProperty ce ne sarà SOLO UNO.
+    //    Se ce ne fossero due, l'app non partirebbe (NoUniqueBeanDefinitionException).
+    // 2. properties: Inietta il POJO configurato e validato.
+    // 3. httpClient: Inietta il bean creato manualmente in HttpClientConfig.
+    public PaymentService(PaymentStrategy strategy, 
+                          PaymentProperties properties, 
+                          HttpClient httpClient) {
+        this.strategy = strategy;
+        this.properties = properties;
+        this.httpClient = httpClient;
+    }
+
+    public void process(double amount) {
+        System.out.println("Using Gateway: " + properties.getUrl());
+        // Polimorfismo: non so se è Paypal o Carta, e non mi interessa.
+        strategy.pay(amount);
+    }
+}
+\end{lstlisting}
+
+\section{Riepilogo del Flusso}
+
+Se lanci l'applicazione con questo \texttt{application.properties}:
+\begin{verbatim}
+payment.gateway.url=https://api.paypal.com
+payment.gateway.timeout-ms=2000
+app.feature.payment-mode=paypal
+\end{verbatim}
+
+Accade questo:
+\begin{enumerate}
+    \item \textbf{Start:} \texttt{@SpringBootApplication} scansiona il package.
+    \item \textbf{Config Scan:} \texttt{@ConfigurationPropertiesScan} trova \texttt{PaymentProperties}. Legge i valori, valida che l'URL non sia vuoto e crea il Bean.
+    \item \textbf{Bean Factory:} Spring legge \texttt{HttpClientConfig}. Chiama il metodo \texttt{secureHttpClient()}, passandogli le properties appena create, e registra il risultato (\texttt{HttpClient}) come Bean.
+    \item \textbf{Condition Check:} 
+    \begin{itemize}
+        \item Controlla \texttt{PaypalStrategy}: la property è "paypal"? SÌ. Bean creato.
+        \item Controlla \texttt{CreditCardStrategy}: la property è "credit\_card"? NO. Bean scartato (non occupa memoria).
+    \end{itemize}
+    \item \textbf{Injection:} Spring crea \texttt{PaymentService} iniettando \texttt{PaypalStrategy}.
+\end{enumerate}
+
+Ecco come le annotazioni lavorano insieme per creare un'architettura modulare e robusta.
+
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
 
 \chapter{Spring Cache, H2 \& Redis: Ottimizzazione Performance}
 
