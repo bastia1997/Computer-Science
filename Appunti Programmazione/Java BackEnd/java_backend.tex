@@ -8559,6 +8559,246 @@ Il \texttt{ResultSet} è legato alla connessione fisica.
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
+\chapter{Esempio Pratico: Architettura JDBC Pura}
+
+In questo capitolo non c'è teoria. Vediamo come si scrive un livello di accesso ai dati (DAO Pattern) robusto, sicuro (No SQL Injection) e corretto nella gestione delle risorse, usando solo Java standard.
+
+L'architettura è divisa in 3 file:
+\begin{enumerate}
+    \item \textbf{User}: Il DTO (Data Transfer Object) che rappresenta il dato.
+    \item \textbf{DatabaseConnection}: La classe responsabile di fornire la connessione.
+    \item \textbf{UserRepository}: La classe che contiene la logica SQL.
+\end{enumerate}
+
+\section{1. Il Modello (DTO)}
+
+Una semplice classe per trasportare i dati dal DB all'applicazione.
+
+\begin{lstlisting}[language=Java, caption=User.java (POJO)]
+public class User {
+    private Long id;
+    private String username;
+    private String email;
+
+    // Costruttore vuoto (spesso richiesto da librerie/framework)
+    public User() {}
+
+    // Costruttore completo
+    public User(Long id, String username, String email) {
+        this.id = id;
+        this.username = username;
+        this.email = email;
+    }
+
+    // Getters e Setters (Omessi per brevità)
+    // toString() per loggare l'oggetto
+    @Override
+    public String toString() {
+        return "User{id=" + id + ", username='" + username + "'}";
+    }
+}
+\end{lstlisting}
+
+\section{2. Gestione Connessione (Factory)}
+
+Centralizziamo i parametri di connessione. In un progetto reale, questi valori verrebbero letti da un file di properties o variabili d'ambiente, mai hardcoded.
+
+\begin{lstlisting}[language=Java, caption=DatabaseFactory.java]
+public class DatabaseFactory {
+    
+    // Parametri di connessione (In prod usare variabili d'ambiente!)
+    private static final String URL = "jdbc:postgresql://localhost:5432/myapp";
+    private static final String USER = "admin";
+    private static final String PASS = "secret";
+
+    // Metodo statico per ottenere una nuova connessione
+    // NOTA: In produzione qui si userebbe un Connection Pool (HikariCP)
+    // invece di DriverManager per performance.
+    public static Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(URL, USER, PASS);
+    }
+}
+\end{lstlisting}
+
+\section{3. Il Repository (Lettura Sicura)}
+
+Ecco come eseguire una \texttt{SELECT} prevenendo SQL Injection e memory leak.
+
+\begin{lstlisting}[language=Java, caption=UserRepository.java (Metodo FindById)]
+public class UserRepository {
+
+    // QUERY COSTANTE: Usiamo '?' come placeholder.
+    // MAI concatenare stringhe qui!
+    private static final String SQL_FIND_BY_ID = 
+        "SELECT id, username, email FROM users WHERE id = ?";
+
+    public Optional<User> findById(Long id) {
+        // TRY-WITH-RESOURCES (Java 7+)
+        // Apre le risorse e le chiude AUTOMATICAMENTE alla fine del blocco.
+        // Ordine di chiusura inverso: ResultSet -> PreparedStatement -> Connection.
+        try (
+            Connection conn = DatabaseFactory.getConnection();
+            PreparedStatement ps = conn.prepareStatement(SQL_FIND_BY_ID)
+        ) {
+            
+            // 1. Binding del parametro (Sostituisce il ? con l'ID)
+            // Gestisce automaticamente l'escaping (Sicurezza SQL Injection)
+            ps.setLong(1, id);
+
+            // 2. Esecuzione Query
+            try (ResultSet rs = ps.executeQuery()) {
+                
+                // 3. Mapping: C'è un risultato?
+                if (rs.next()) {
+                    User user = new User();
+                    user.setId(rs.getLong("id"));
+                    user.setUsername(rs.getString("username"));
+                    user.setEmail(rs.getString("email"));
+                    
+                    // Restituiamo un Optional pieno
+                    return Optional.of(user);
+                }
+            }
+        } catch (SQLException e) {
+            // Loggare sempre l'errore!
+            System.err.println("Errore DB: " + e.getMessage());
+            // Rilanciare come RuntimeException o eccezione custom
+            throw new RuntimeException("Errore durante la ricerca utente", e);
+        }
+
+        // Nessun utente trovato
+        return Optional.empty();
+    }
+}
+\end{lstlisting}
+
+\section{4. Transazioni (Scrittura Atomica)}
+
+Esempio avanzato: inserimento di un utente e, contestualmente, di un log di audit. Se uno fallisce, falliscono entrambi (Rollback).
+
+\begin{lstlisting}[language=Java, caption=UserRepository.java (Transazione)]
+    private static final String SQL_INSERT_USER = 
+        "INSERT INTO users (username, email) VALUES (?, ?)";
+    
+    private static final String SQL_INSERT_LOG = 
+        "INSERT INTO audit_log (action, user_data) VALUES (?, ?)";
+
+    public void createUserWithAudit(User user) {
+        Connection conn = null; // Dichiarata fuori per gestirla nel finally
+        
+        try {
+            conn = DatabaseFactory.getConnection();
+            
+            // 1. DISABILITIAMO l'AutoCommit (Inizio Transazione)
+            conn.setAutoCommit(false);
+
+            // --- STEP A: Inserimento Utente ---
+            // RETURN_GENERATED_KEYS serve per recuperare l'ID autoincrementato
+            try (PreparedStatement psUser = 
+                    conn.prepareStatement(SQL_INSERT_USER, Statement.RETURN_GENERATED_KEYS)) {
+                
+                psUser.setString(1, user.getUsername());
+                psUser.setString(2, user.getEmail());
+                psUser.executeUpdate();
+                
+                // Recuperiamo l'ID generato dal DB
+                try (ResultSet rs = psUser.getGeneratedKeys()) {
+                    if (rs.next()) {
+                        user.setId(rs.getLong(1));
+                    }
+                }
+            }
+
+            // --- STEP B: Inserimento Log (Audit) ---
+            try (PreparedStatement psLog = conn.prepareStatement(SQL_INSERT_LOG)) {
+                psLog.setString(1, "CREATE_USER");
+                psLog.setString(2, "Created user with ID: " + user.getId());
+                psLog.executeUpdate();
+            }
+
+            // 3. COMMIT: Se siamo qui, tutto è andato bene. Rendiamo le modifiche permanenti.
+            conn.commit();
+            System.out.println("Transazione completata con successo.");
+
+        } catch (SQLException e) {
+            // 4. ROLLBACK: Qualcosa è andato storto. Annulliamo TUTTO.
+            if (conn != null) {
+                try {
+                    System.err.println("Rollback in corso...");
+                    conn.rollback();
+                } catch (SQLException ex) {
+                    ex.printStackTrace();
+                }
+            }
+            throw new RuntimeException("Transazione fallita", e);
+        } finally {
+            // 5. Ripristino stato e chiusura
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(true); // Buona norma ripristinare il default
+                    conn.close();
+                } catch (SQLException e) { e.printStackTrace(); }
+            }
+        }
+    }
+\end{lstlisting}
+
+\section{5. Esecuzione: Il Main}
+
+Infine, mettiamo tutto insieme.
+Questo `main` simula quello che succederebbe in un Controller o in un Service layer: istanzia il repository, crea un oggetto, lo salva (sfruttando la transazione) e poi lo rilegge per conferma.
+
+\begin{lstlisting}[language=Java, caption=MainApp.java (Entry Point)]
+public class MainApp {
+
+    public static void main(String[] args) {
+        // 1. Istanziamo il Repository
+        // (In un'app Spring questo sarebbe un @Autowired, qui è manuale)
+        UserRepository userRepo = new UserRepository();
+
+        System.out.println("--- AVVIO DIMOSTRAZIONE JDBC ---");
+
+        // --- FASE 1: Creazione (Scrittura Transazionale) ---
+        User nuovoUtente = new User(null, "MarioRossi", "mario@example.com");
+
+        try {
+            System.out.println("Salvataggio utente in corso...");
+            
+            // Chiama il metodo transazionale (User + Audit Log)
+            userRepo.createUserWithAudit(nuovoUtente);
+            
+            // Se arriviamo qui, il commit è avvenuto.
+            // L'ID è stato popolato grazie a RETURN_GENERATED_KEYS nel repository.
+            System.out.println("Utente salvato! ID assegnato dal DB: " + nuovoUtente.getId());
+
+        } catch (RuntimeException e) {
+            System.err.println("Errore critico nel salvataggio: " + e.getMessage());
+            // In caso di errore, il main termina qui.
+            return;
+        }
+
+        // --- FASE 2: Recupero (Lettura Sicura) ---
+        System.out.println("\nVerifica lettura dal database...");
+        
+        Long idDaCercare = nuovoUtente.getId();
+        
+        // Il metodo restituisce Optional, obbligandoci a gestire il caso "Not Found"
+        Optional<User> utenteLetto = userRepo.findById(idDaCercare);
+
+        // Uso funzionale di Optional (Java 9+)
+        utenteLetto.ifPresentOrElse(
+            (u) -> System.out.println("Trovato: " + u.toString()),
+            () -> System.out.println("ERRORE: Utente con ID " + idDaCercare + " non trovato!")
+        );
+        
+        System.out.println("--- FINE DIMOSTRAZIONE ---");
+    }
+}
+\end{lstlisting}
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
 \chapter{Hibernate Internals: Architettura e Lifecycle}
 
 Molti sviluppatori usano Hibernate come una "scatola nera": annotano le classi, chiamano \texttt{save()} e sperano che funzioni.
@@ -8609,18 +8849,20 @@ L'EntityManager non è solo un passacarte verso il DB. Gestisce il \textbf{Persi
 \end{tikzpicture}
 \end{center}
 
-\begin{deepdive}{Perché la L1 Cache è importante?}
-La L1 Cache garantisce l'\textbf{Identity Map Pattern}.
-Se nella stessa transazione chiedi due volte l'utente con ID 1:
-\begin{lstlisting}[language=Java]
-User u1 = em.find(User.class, 1L); // Select SQL
-User u2 = em.find(User.class, 1L); // Nessuna SQL!
-System.out.println(u1 == u2); // TRUE: Sono lo stesso identico oggetto in memoria
-\end{lstlisting}
-Senza questo meccanismo, avresti due oggetti Java diversi che rappresentano la stessa riga DB, creando conflitti di dati.
-\end{deepdive}
+\section{Il Concetto di Sessione e il Persistence Context}
 
-\section{Entity Lifecycle: La Macchina a Stati}
+Al cuore di Hibernate (e di JPA) c'è un concetto che funge da intermediario tra la tua applicazione Java e il Database fisico: la \textbf{Sessione} (in Hibernate chiamata \texttt{Session}, in JPA standard \texttt{EntityManager}).
+
+La Sessione non è solo un wrapper intorno alla connessione JDBC. È un ambiente intelligente che traccia gli oggetti caricati dal database. Questo ambiente di tracciamento si chiama \textbf{Persistence Context}.
+
+\subsection{EntityManager vs Session}
+Spesso si usano i termini in modo intercambiabile, ma c'è una gerarchia:
+\begin{itemize}
+    \item \textbf{Session (Hibernate):} È l'interfaccia nativa e proprietaria di Hibernate. Offre metodi specifici (es. \texttt{save()}, \texttt{update()}).
+    \item \textbf{EntityManager (JPA):} È l'interfaccia standard definita da Java. Spring Boot usa questa. Sotto il cofano, l'EntityManager "avvolge" la Session di Hibernate.
+\end{itemize}
+
+\subsection{Entity Lifecycle: La Macchina a Stati}
 In JPA, un oggetto non è semplicemente "nel DB" o "non nel DB". Vive in uno di 4 stati ben precisi. Capire questi stati è la differenza tra un Junior e un Senior.
 
 \begin{center}
@@ -8645,7 +8887,7 @@ In JPA, un oggetto non è semplicemente "nel DB" o "non nel DB". Vive in uno di 
 \end{tikzpicture}
 \end{center}
 
-\subsection{1. Transient (Effimero)}
+\subsubsection{1. Transient (Effimero)}
 L'oggetto è appena stato creato con \texttt{new}.
 \begin{itemize}
     \item Vive solo nella memoria Heap di Java.
@@ -8654,7 +8896,7 @@ L'oggetto è appena stato creato con \texttt{new}.
     \item Se il programma termina, l'oggetto svanisce.
 \end{itemize}
 
-\subsection{2. Managed (Gestito)}
+\subsubsection{2. Managed (Gestito)}
 L'oggetto è "sotto sorveglianza" nel Persistence Context.
 \begin{itemize}
     \item Ha un ID database.
@@ -8662,19 +8904,19 @@ L'oggetto è "sotto sorveglianza" nel Persistence Context.
     \item Al \texttt{commit()}, le modifiche verranno sincronizzate col DB.
 \end{itemize}
 
-\subsection{3. Detached (Staccato)}
+\subsubsection{3. Detached (Staccato)}
 È l'incubo degli sviluppatori. L'oggetto ha un ID (quindi rappresenta una riga DB), ma l'\texttt{EntityManager} è stato chiuso o l'oggetto è stato espulso.
 \begin{itemize}
     \item Le modifiche ai set non vengono salvate.
     \item Se provi ad accedere a collezioni Lazy, ottieni \texttt{LazyInitializationException}.
 \end{itemize}
 
-\subsection{4. Removed}
+\subsubsection{4. Removed}
 L'oggetto è marcato per la cancellazione. La \texttt{DELETE} SQL partirà al prossimo flush.
 
 \section{Le Transizioni Critiche}
 
-\subsection{persist() vs merge()}
+\subsubsection{persist() vs merge()}
 \begin{itemize}
     \item \textbf{persist(entity):} Prende un oggetto \textit{Transient} e lo rende \textit{Managed}. Se l'oggetto aveva già un ID generato manualmente, potrebbe lanciare eccezione.
     \item \textbf{merge(entity):} Serve per salvare oggetti \textit{Detached}.
@@ -8694,7 +8936,7 @@ User managedU = em.merge(u);
 managedU.setName("Luigi"); // Modifica salvata.
 \end{lstlisting}
 
-\section{Il Dirty Checking: L'Update Automatico}
+\subsection{Il Dirty Checking: L'Update Automatico}
 Questa è la funzionalità più potente e pericolosa di Hibernate.
 
 Quando un oggetto è \textbf{Managed}, Hibernate mantiene uno \textbf{Snapshot} (una copia segreta) dei suoi dati originali al momento del caricamento.
@@ -8722,6 +8964,153 @@ public void updatePassword(Long userId, String newPass) {
 \textbf{Risposta:} Perché l'entità era \textbf{Managed} e la transazione ha fatto commit.
 \textbf{Soluzione:} Usa \texttt{em.detach(entity)} se vuoi modificarlo senza salvare, oppure usa DTO (che non sono managed), oppure usa transazioni \texttt{readOnly=true}.
 \end{interview}
+
+
+\subsection{Sessione e Transazioni (Unit of Work)}
+La Sessione è progettata per essere leggera e "usa e getta". Il pattern tipico è \textbf{Session-per-Request} (o Session-per-Transaction).
+\begin{enumerate}
+    \item Apre la Sessione (e la transazione).
+    \item Esegue le operazioni di business.
+    \item Committa e chiude la Sessione.
+\end{enumerate}
+
+\begin{interview}{La LazyInitializationException}
+    \textbf{Domanda:} "Cos'è la \texttt{LazyInitializationException} e perché avviene?"
+    
+    \textbf{Risposta:} Avviene quando tenti di accedere a una collezione \textit{Lazy} (es. \texttt{user.getOrders()}) su un oggetto che è in stato \textbf{Detached}.
+    
+    \textbf{Scenario:}
+    \begin{itemize}
+        \item Il Service carica un \texttt{User} (Sessione aperta).
+        \item Il Service restituisce l'oggetto al Controller (la Transazione/Sessione si chiude qui).
+        \item Il Controller (o la View HTML) prova a chiamare \texttt{user.getOrders()}.
+        \item Poiché la lista ordini non era stata caricata e la Sessione (il ponte col DB) è ormai chiusa, Hibernate non può eseguire la query e lancia l'eccezione.
+    \end{itemize}
+\end{interview}
+
+\subsection{Flush: Sincronizzazione con il DB}
+Le modifiche fatte agli oggetti Persistent non vengono inviate al Database istantaneamente. Vengono accumulate in memoria nel Persistence Context.
+Il processo di invio fisico delle query SQL (INSERT/UPDATE/DELETE) si chiama \textbf{Flush}.
+
+Il Flush avviene di default:
+\begin{itemize}
+    \item Prima del commit della transazione.
+    \item Prima dell'esecuzione di una query JPQL/SQL (per garantire che la query legga dati aggiornati).
+\end{itemize}
+
+\section{Il Caching in Hibernate: Livello 1 e Livello 2}
+
+Uno dei colli di bottiglia principali nelle applicazioni enterprise è l'accesso al database (I/O). Hibernate cerca di mitigare questo problema attraverso un meccanismo di \textbf{Caching} su due livelli, il cui obiettivo è ridurre il numero di query SQL inviate fisicamente al DB.
+
+\subsection{Level 1 Cache (L1): La Cache di Sessione}
+La Cache di primo livello è associata all'oggetto \texttt{Session} (o \texttt{EntityManager} in JPA).
+Ha le seguenti caratteristiche:
+\begin{itemize}
+    \item \textbf{Obbligatoria:} È abilitata di default e non può essere disabilitata completamente.
+    \item \textbf{Scope Transazionale:} Nasce quando apri una transazione (o sessione) e muore quando la chiudi (commit/rollback).
+    \item \textbf{Visibilità:} I dati caricati nella cache L1 sono visibili \textit{solo} al thread che possiede quella sessione.
+\end{itemize}
+
+\textbf{Come funziona:}
+Quando chiedi un'entità per ID (\texttt{findById}), Hibernate guarda prima nella L1 Cache (che è essenzialmente una Map in memoria).
+\begin{enumerate}
+    \item Se l'oggetto c'è, lo restituisce immediatamente (0 query).
+    \item Se non c'è, fa la query al DB, salva l'oggetto in L1 e lo restituisce.
+\end{enumerate}
+
+\begin{lstlisting}[language=Java, caption=Funzionamento L1 Cache]
+// Esempio in una singola transazione
+@Transactional
+public void demoL1() {
+    // 1. Prima chiamata: Hibernate esegue la SELECT sul DB
+    User u1 = entityManager.find(User.class, 1L);
+    
+    // 2. Seconda chiamata: Hibernate trova l'oggetto in L1 Cache.
+    // NESSUNA QUERY viene inviata al DB.
+    User u2 = entityManager.find(User.class, 1L);
+    
+    System.out.println(u1 == u2); // TRUE: È lo stesso identico oggetto in memoria
+}
+\end{lstlisting}
+
+\begin{interview}{Posso disabilitare la cache L1?}
+    \textbf{Domanda:} "La cache L1 mi sta consumando troppa memoria durante un batch job massivo. Posso spegnerla?"
+    
+    \textbf{Risposta:} Non puoi disabilitarla globalmente, perché è intrinseca al funzionamento di Hibernate (garantisce che all'interno di una transazione, l'identità dell'oggetto sia unica).
+    Tuttavia, puoi gestirla manualmente per evitare \texttt{OutOfMemoryError}:
+    \begin{itemize}
+        \item \texttt{entityManager.clear()}: Svuota completamente la cache L1 (stacca tutti gli oggetti).
+        \item \texttt{entityManager.detach(entity)}: Rimuove un singolo oggetto dalla cache.
+    \end{itemize}
+\end{interview}
+
+\subsection{Level 2 Cache (L2): La Cache di Processo}
+La Cache di secondo livello è associata alla \texttt{SessionFactory}.
+Ha le seguenti caratteristiche:
+\begin{itemize}
+    \item \textbf{Opzionale:} Di default è disabilitata. Va configurata esplicitamente.
+    \item \textbf{Scope Globale:} I dati sono condivisi tra \textit{tutte} le sessioni/transazioni dell'applicazione.
+    \item \textbf{Provider Esterno:} Hibernate non implementa la cache L2 da solo, ma si appoggia a provider esterni come \textbf{EhCache}, \textbf{Infinispan}, \textbf{Redis} o \textbf{Caffeine}.
+\end{itemize}
+
+\textbf{Quando usarla?}
+La L2 Cache è ideale per dati "Read-Mostly" (letti spesso, modificati raramente), come liste di regioni, categorie prodotti o configurazioni. Non è adatta per dati che cambiano freneticamente, a causa dell'overhead di invalidazione e sincronizzazione.
+
+\subsection{Strategie di Concorrenza della Cache L2}
+Quando più transazioni accedono alla Cache L2, bisogna decidere come gestire la concorrenza. Hibernate offre diverse strategie:
+
+\begin{itemize}
+    \item \textbf{READ\_ONLY:} La più veloce. Usala se i dati non cambiano \textbf{mai} (es. Giorni della settimana). Se provi a modificare l'entità, Hibernate lancia un'eccezione.
+    \item \textbf{NONSTRICT\_READ\_WRITE:} Veloce ma non garantisce consistenza assoluta. Se due thread modificano lo stesso dato, c'è una piccola finestra in cui si potrebbero leggere dati vecchi. Buona per dati che cambiano di rado (es. Articoli blog).
+    \item \textbf{READ\_WRITE:} Usa lock per garantire una forte consistenza (Read Committed). Più lenta della precedente.
+    \item \textbf{TRANSACTIONAL:} Supporta transazioni XA complete (molto costosa, supportata solo da alcuni provider come EhCache).
+\end{itemize}
+
+\subsection{Confronto Rapido L1 vs L2}
+
+\begin{table}[h]
+\centering
+\rowcolors{2}{gray!10}{white}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|X|X|}
+\hline
+\rowcolor{deepblue} \textbf{\textcolor{white}{Caratteristica}} & \textbf{\textcolor{white}{Level 1 (L1)}} & \textbf{\textcolor{white}{Level 2 (L2)}} \\
+\hline
+\textbf{Scope} & Sessione (Transaction). & SessionFactory (Applicazione). \\
+\hline
+\textbf{Attivazione} & Default (Sempre attiva). & Opzionale (Va configurata). \\
+\hline
+\textbf{Condivisione} & Privata per Thread. & Condivisa tra tutti gli utenti. \\
+\hline
+\textbf{Contenuto} & Oggetti Java veri e propri. & Dati "disidratati" (array di valori/stringhe). \\
+\hline
+\textbf{Provider} & Interno a Hibernate. & Esterno (Redis, EhCache, Hazelcast). \\
+\hline
+\end{tabularx}
+\end{table}
+
+\begin{interview}{Query Cache: Un terzo livello?}
+    \textbf{Domanda:} "Se attivo la L2 Cache, le query JPQL vengono cachate automaticamente?"
+    
+    \textbf{Risposta:} \textbf{NO.}
+    La L2 Cache standard funziona solo per le lookup per ID (\texttt{findById}).
+    Se esegui \texttt{SELECT p FROM Product p WHERE p.price > 100}, Hibernate eseguirà sempre la query SQL.
+    
+    Per cachare i risultati delle query complesse, bisogna attivare esplicitamente la \textbf{Query Cache} (\texttt{hibernate.cache.use\_query\_cache=true}) e annotare la singola query come "cacheable".
+    \textit{Attenzione:} La Query Cache è spesso controproducente se le tabelle coinvolte vengono aggiornate frequentemente (perché la cache viene invalidata a ogni update sulla tabella).
+\end{interview}
+
+\begin{deepdive}{Perché la L1 Cache è importante?}
+La L1 Cache garantisce l'\textbf{Identity Map Pattern}.
+Se nella stessa transazione chiedi due volte l'utente con ID 1:
+\begin{lstlisting}[language=Java]
+User u1 = em.find(User.class, 1L); // Select SQL
+User u2 = em.find(User.class, 1L); // Nessuna SQL!
+System.out.println(u1 == u2); // TRUE: Sono lo stesso identico oggetto in memoria
+\end{lstlisting}
+Senza questo meccanismo, avresti due oggetti Java diversi che rappresentano la stessa riga DB, creando conflitti di dati.
+\end{deepdive}
+
 
 % -------------------------------------------------------------------
 % CAPITOLO
@@ -9711,6 +10100,416 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
     \hline
 \end{tabularx}
 \end{center}
+
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
+\chapter{JPA Criteria API: Query Type-Safe e Dinamiche}
+
+Fino ad ora abbiamo visto query scritte in \textbf{HQL/JPQL} (es. \texttt{"FROM User u WHERE u.age > 18"}).
+Sebbene leggibili, queste query hanno due grossi difetti:
+\begin{enumerate}
+    \item \textbf{Non sono Type-Safe:} Sono semplici stringhe. Se scrivi \texttt{u.eta} invece di \texttt{u.age}, te ne accorgi solo a \textbf{Runtime} (quando l'app crasha), non durante la compilazione.
+    \item \textbf{Difficili da comporre dinamicamente:} Se devi creare un filtro di ricerca con 10 campi opzionali (es. filtro e-commerce), concatenare stringhe con infiniti \texttt{if (prezzo != null) sql += " AND..."} diventa un incubo di manutenzione e rischio SQL Injection.
+\end{enumerate}
+
+La \textbf{Criteria API} risolve questi problemi permettendo di costruire query usando \textbf{Oggetti Java}.
+
+\section{Architettura: I 3 Moschettieri}
+
+Per scrivere una query Criteria, servono sempre tre componenti fondamentali ottenuti dall'\texttt{EntityManager}.
+
+\begin{enumerate}
+    \item \textbf{CriteriaBuilder (Il Fabbro):} È la factory. Serve a creare le parti della query (la query stessa, le clausole \texttt{where}, le espressioni logiche come \texttt{equal}, \texttt{gt}, \texttt{like}).
+    \item \textbf{CriteriaQuery<T> (Il Contenitore):} Rappresenta la struttura della query (SELECT, FROM, WHERE, ORDER BY). È tipizzata sul risultato atteso.
+    \item \textbf{Root<T> (La Radice):} Rappresenta la clausola \texttt{FROM}. È il punto di partenza per accedere alle colonne (attributi) dell'entità.
+\end{enumerate}
+
+\begin{lstlisting}[language=Java, caption=Scheletro base di una Criteria Query]
+// 1. Otteniamo il Builder
+CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+
+// 2. Creiamo la Query (il risultato sarà di tipo User)
+CriteriaQuery<User> query = cb.createQuery(User.class);
+
+// 3. Definiamo la Root (FROM User)
+Root<User> root = query.from(User.class);
+
+// 4. Costruiamo la logica (SELECT * FROM User)
+query.select(root);
+
+// 5. Esecuzione
+List<User> results = entityManager.createQuery(query).getResultList();
+\end{lstlisting}
+
+\section{Filtraggio: La Clausola WHERE}
+
+Invece di scrivere \texttt{age > 18}, usiamo i metodi del Builder.
+
+\begin{lstlisting}[language=Java, caption=Clausola Where Semplice]
+// Voglio: SELECT * FROM users WHERE username = 'Mario'
+
+// Definisco la condizione (Il Predicato)
+// root.get("username") accede al campo dell'entity
+Predicate condition = cb.equal(root.get("username"), "Mario");
+
+// Applico la condizione alla query
+query.where(condition);
+\end{lstlisting}
+
+\begin{deepdive}{Root.get() vs Stringhe Magiche}
+    Scrivere \texttt{root.get("username")} è ancora pericoloso: se rinomini il campo \texttt{username} in \texttt{loginName} nella classe Java ma dimentichi di aggiornare la stringa qui, avrai un errore a Runtime.
+    La soluzione "Senior" è usare il \textbf{JPA Metamodel} (vedi Sezione \ref{sec:metamodel}).
+\end{deepdive}
+
+\section{Il vero potere: Query Dinamiche}
+
+Questo è il motivo principale per cui si usa Criteria: costruire filtri complessi dove i parametri sono opzionali.
+
+Immagina una form di ricerca utenti dove puoi filtrare per nome, email, o età minima. Se l'utente lascia un campo vuoto, quel filtro non deve essere applicato.
+
+\begin{lstlisting}[language=Java, caption=Pattern List<Predicate>]
+public List<User> searchUsers(String name, String email, Integer minAge) {
+    CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+    CriteriaQuery<User> query = cb.createQuery(User.class);
+    Root<User> root = query.from(User.class);
+
+    // Lista per accumulare le condizioni (AND dinamico)
+    List<Predicate> predicates = new ArrayList<>();
+
+    // Aggiungo condizione SOLO se il parametro è presente
+    if (name != null && !name.isEmpty()) {
+        predicates.add(cb.like(root.get("name"), "%" + name + "%"));
+    }
+
+    if (email != null && !email.isEmpty()) {
+        predicates.add(cb.equal(root.get("email"), email));
+    }
+
+    if (minAge != null) {
+        predicates.add(cb.ge(root.get("age"), minAge)); // ge = greater or equal
+    }
+
+    // Converto la lista in un array e li unisco con AND
+    query.where(cb.and(predicates.toArray(new Predicate[0])));
+
+    return entityManager.createQuery(query).getResultList();
+}
+\end{lstlisting}
+
+\begin{interview}{HQL vs Criteria: Quando usare quale?}
+    \textbf{Domanda:} "Criteria sembra molto verboso (10 righe per una select). Perché non usare sempre HQL?"
+    
+    \textbf{Risposta:}
+    \begin{itemize}
+        \item \textbf{Usa HQL/JPQL} per query \textbf{statiche} e conosciute a priori. È più leggibile, conciso e facile da ottimizzare.
+        \item \textbf{Usa Criteria} per query \textbf{dinamiche} (es. filtri di ricerca con campi opzionali), dove concatenare stringhe HQL porterebbe a un codice "spaghetti" e insicuro.
+    \end{itemize}
+\end{interview}
+
+\section{Type Safety Totale: Il Metamodel}
+
+Per eliminare le stringhe come \texttt{root.get("age")}, JPA permette di generare automaticamente delle classi "gemelle" (chiamate Metamodel) che contengono i nomi dei campi come costanti statiche tipizzate.
+Solitamente si usa il plugin Maven \texttt{hibernate-jpamodelgen}.
+
+Se hai una entity \texttt{User}, verrà generata una classe \texttt{User\_} (col trattino basso).
+
+\begin{lstlisting}[language=Java, caption=Uso del Metamodel]
+// Invece di: root.get("age")
+// Scriviamo: root.get(User_.AGE)
+
+// Se cambi il nome del campo 'age' nella classe User e ricompili,
+// User_.AGE non esisterà più e avrai un ERRORE DI COMPILAZIONE.
+// Bug preso prima di andare in produzione!
+Predicate p = cb.gt(root.get(User_.AGE), 18);
+\end{lstlisting}
+
+\section{Proiezioni: Selezionare solo alcuni campi (DTO)}
+
+Spesso non vogliamo caricare l'intera Entity (magari pesante), ma solo un paio di colonne per mostrarle in una lista.
+Criteria permette di mappare il risultato direttamente su un DTO usando \texttt{construct}.
+
+\begin{lstlisting}[language=Java, caption=Proiezione su DTO]
+CriteriaQuery<UserDTO> query = cb.createQuery(UserDTO.class);
+Root<User> root = query.from(User.class);
+
+// SELECT new com.example.UserDTO(u.name, u.email) FROM User u
+query.select(
+    cb.construct(
+        UserDTO.class,       // Classe di destinazione
+        root.get("name"),    // Primo argomento costruttore
+        root.get("email")    // Secondo argomento costruttore
+    )
+);
+
+List<UserDTO> dtos = entityManager.createQuery(query).getResultList();
+\end{lstlisting}
+
+\begin{deepdive}{Criteria vs Specification (Spring Data)}
+    Se usi Spring Data JPA, raramente scriverai codice Criteria "puro" come questo.
+    Userai le \textbf{Specifications}.
+    
+    Una \texttt{Specification} è un wrapper funzionale attorno alla Criteria API.
+    \begin{verbatim}
+    public static Specification<User> hasName(String name) {
+        return (root, query, cb) -> cb.equal(root.get("name"), name);
+    }
+    \end{verbatim}
+    Questo permette di comporre query in modo molto elegante:
+    \texttt{repo.findAll(hasName("Mario").and(isAdult()));}
+    
+    Tuttavia, sotto il cofano, Spring usa esattamente la Criteria API che abbiamo appena studiato.
+\end{deepdive}
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
+\chapter{Esempio Pratico: Architettura Hibernate Pura}
+
+Mentre JDBC richiede di scrivere SQL manualmente e gestire connessioni fisiche, Hibernate funge da ponte (ORM) tra il mondo degli oggetti Java e il mondo relazionale del DB.
+
+In questo esempio "Vanilla" (senza Spring), dobbiamo gestire manualmente:
+\begin{itemize}
+    \item La configurazione XML.
+    \item Il ciclo di vita della \texttt{SessionFactory} (pesante, una per app).
+    \item Il ciclo di vita della \texttt{Session} (leggera, una per richiesta/transazione).
+    \item I confini della Transazione (\texttt{begin}, \texttt{commit}, \texttt{rollback}).
+\end{itemize}
+
+\section{1. Configurazione (hibernate.cfg.xml)}
+
+In Spring Boot questo file non esiste (si usa \texttt{application.properties}), ma in Hibernate puro è il cuore del sistema. Va messo nella cartella \texttt{src/main/resources}.
+
+\begin{lstlisting}[language=XML, caption=hibernate.cfg.xml]
+<!DOCTYPE hibernate-configuration PUBLIC
+        "-//Hibernate/Hibernate Configuration DTD 3.0//EN"
+        "http://www.hibernate.org/dtd/hibernate-configuration-3.0.dtd">
+<hibernate-configuration>
+    <session-factory>
+        <!-- 1. Connessione al Database (JDBC settings) -->
+        <property name="connection.driver_class">org.postgresql.Driver</property>
+        <property name="connection.url">jdbc:postgresql://localhost:5432/hiber_db</property>
+        <property name="connection.username">admin</property>
+        <property name="connection.password">secret</property>
+
+        <!-- 2. Pool di Connessioni (C3P0 o HikariCP integrato) -->
+        <property name="connection.pool_size">5</property>
+
+        <!-- 3. SQL Dialect (Dice a Hibernate come tradurre l'HQL in SQL specifico) -->
+        <property name="dialect">org.hibernate.dialect.PostgreSQLDialect</property>
+
+        <!-- 4. Gestione del contesto (Thread corrente) -->
+        <property name="current_session_context_class">thread</property>
+
+        <!-- 5. Debugging -->
+        <property name="show_sql">true</property> <!-- Stampa le query -->
+        <property name="format_sql">true</property> <!-- Formatta l'output -->
+
+        <!-- 6. Schema Generation (PERICOLOSO IN PROD!) -->
+        <!-- 'update': crea le tabelle se non esistono, le aggiorna se cambiano -->
+        <property name="hbm2ddl.auto">update</property>
+
+        <!-- 7. Registrazione delle Entity -->
+        <mapping class="com.example.model.User"/>
+    </session-factory>
+</hibernate-configuration>
+\end{lstlisting}
+
+\section{2. L'Entity (JPA Annotations)}
+
+A differenza del DTO JDBC, questa classe è "viva". Hibernate ne monitora lo stato.
+Usiamo le annotazioni standard JPA (\texttt{jakarta.persistence.*}) per massima portabilità.
+
+\begin{lstlisting}[language=Java, caption=User.java (Entity)]
+@Entity // Indica che questa classe mappa una tabella
+@Table(name = "users") // Nome della tabella (opzionale se uguale alla classe)
+public class User {
+
+    @Id // Chiave Primaria
+    @GeneratedValue(strategy = GenerationType.IDENTITY) // AUTO_INCREMENT
+    private Long id;
+
+    @Column(name = "username", nullable = false, unique = true)
+    private String username;
+
+    @Column(name = "email")
+    private String email;
+
+    // Costruttore vuoto: OBBLIGATORIO per Hibernate (usa la Reflection)
+    public User() {}
+
+    public User(String username, String email) {
+        this.username = username;
+        this.email = email;
+    }
+
+    // Getters e Setters (Fondamentali per i proxy di Hibernate)
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
+    
+    // toString() per debug
+    @Override
+    public String toString() {
+        return "User[id=" + id + ", user=" + username + "]";
+    }
+}
+\end{lstlisting}
+
+\section{3. Infrastructure: HibernateUtil}
+
+La creazione della \texttt{SessionFactory} è un'operazione costosa (parsing XML, verifica schema DB). Va fatta una volta sola all'avvio (Pattern Singleton).
+
+\begin{lstlisting}[language=Java, caption=HibernateUtil.java]
+public class HibernateUtil {
+    
+    private static SessionFactory sessionFactory;
+
+    public static SessionFactory getSessionFactory() {
+        if (sessionFactory == null) {
+            try {
+                // Carica la configurazione e costruisce la factory
+                Configuration configuration = new Configuration();
+                configuration.configure(); // Cerca hibernate.cfg.xml di default
+                
+                sessionFactory = configuration.buildSessionFactory();
+            } catch (Exception e) {
+                e.printStackTrace();
+                throw new RuntimeException("Errore inizializzazione Hibernate");
+            }
+        }
+        return sessionFactory;
+    }
+
+    public static void shutdown() {
+        if (sessionFactory != null) {
+            sessionFactory.close(); // Chiude il pool di connessioni
+        }
+    }
+}
+\end{lstlisting}
+
+\section{4. Il Repository (CRUD)}
+
+Qui vediamo la gestione manuale della Transazione.
+In JDBC scrivevamo SQL (\texttt{INSERT INTO...}). In Hibernate "persistiamo oggetti".
+
+\begin{lstlisting}[language=Java, caption=UserRepository.java]
+public class UserRepository {
+
+    // CREATE
+    public void save(User user) {
+        Transaction transaction = null;
+        // Otteniamo una sessione (Try-with-resources per chiuderla alla fine)
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            
+            // 1. Inizio Transazione
+            transaction = session.beginTransaction();
+            
+            // 2. Salvataggio (L'oggetto diventa PERSISTENT)
+            // Hibernate genererà la INSERT INTO users...
+            session.persist(user);
+            
+            // 3. Commit (Le modifiche vanno sul DB)
+            transaction.commit();
+            
+        } catch (Exception e) {
+            // 4. Rollback in caso di errore
+            if (transaction != null) {
+                transaction.rollback();
+            }
+            e.printStackTrace();
+        }
+    }
+
+    // READ (Find By ID)
+    public User findById(Long id) {
+        // Per le letture semplici la transazione è opzionale ma consigliata
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            // get() o find() restituiscono l'oggetto o null
+            return session.get(User.class, id);
+        }
+    }
+
+    // READ (Query HQL - Hibernate Query Language)
+    public List<User> findAll() {
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            // Non stiamo selezionando tabelle, ma oggetti!
+            // "FROM User" si riferisce alla CLASSE User, non alla tabella users
+            return session.createQuery("FROM User", User.class).list();
+        }
+    }
+
+    // UPDATE
+    public void updateEmail(Long userId, String newEmail) {
+        Transaction tx = null;
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            tx = session.beginTransaction();
+
+            // A. Carico l'oggetto (Stato: Persistent)
+            User user = session.get(User.class, userId);
+            
+            if (user != null) {
+                // B. Modifico il campo
+                user.setEmail(newEmail);
+                
+                // C. NON serve chiamare session.update()!
+                // Grazie al "Dirty Checking", Hibernate vede la modifica
+                // e lancerà la UPDATE al commit.
+            }
+            
+            tx.commit();
+        } catch (Exception e) {
+            if (tx != null) tx.rollback();
+            e.printStackTrace();
+        }
+    }
+}
+\end{lstlisting}
+
+\section{5. Esecuzione: Il Main}
+
+\begin{lstlisting}[language=Java, caption=MainApp.java]
+public class MainApp {
+    public static void main(String[] args) {
+        UserRepository repo = new UserRepository();
+
+        System.out.println("--- START HIBERNATE ---");
+
+        // 1. Creazione
+        User user1 = new User("MarioRossi", "mario@test.com");
+        repo.save(user1);
+        System.out.println("Utente salvato con ID: " + user1.getId());
+
+        // 2. Lettura
+        User retrieved = repo.findById(user1.getId());
+        System.out.println("Utente letto: " + retrieved);
+
+        // 3. Modifica (Update automatico)
+        System.out.println("Modifico email...");
+        repo.updateEmail(user1.getId(), "nuova.email@test.com");
+
+        // 4. Lista completa
+        List<User> tutti = repo.findAll();
+        System.out.println("Utenti nel DB: " + tutti.size());
+
+        // 5. Chiusura Applicazione
+        HibernateUtil.shutdown();
+    }
+}
+\end{lstlisting}
+
+\begin{deepdive}{HQL vs SQL}
+Nel metodo \texttt{findAll}, abbiamo scritto \texttt{"FROM User"}.
+\begin{itemize}
+    \item \textbf{SQL:} Lavora su Tabelle e Colonne (\texttt{SELECT * FROM users}).
+    \item \textbf{HQL (Hibernate QL):} Lavora su Classi e Campi (\texttt{FROM User}).
+\end{itemize}
+Hibernate traduce HQL in SQL a runtime. Se un giorno cambi il nome della tabella nel DB, con SQL devi riscrivere le query; con HQL basta cambiare l'annotazione \texttt{@Table} nell'Entity.
+\end{deepdive}
 
 
 \part{Le fondamenta che hanno portato a Spring}
@@ -11389,6 +12188,227 @@ Perché metterlo? Non è solo documentazione.
     \hline
 \end{tabularx}
 \end{center}
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
+\chapter{Esempio Pratico: Architettura Spring Data JPA}
+
+Siamo arrivati al livello di astrazione più alto e più diffuso nel mercato odierno.
+Se con Hibernate puro dovevamo gestire manualmente la \texttt{SessionFactory} e le Transazioni, \textbf{Spring Data JPA} nasconde tutta questa complessità.
+
+Il cuore di Spring Data è il concetto di \textbf{Repository}: non serve più scrivere l'implementazione della classe DAO. Basta definire un'\textbf{Interfaccia} e Spring genererà l'implementazione a Runtime usando i Proxy Dinamici.
+
+\section{1. Configurazione (application.properties)}
+
+In un progetto Spring Boot, non serve \texttt{hibernate.cfg.xml}. Tutto si configura nel file properties principale. Spring Boot configurerà automaticamente il \texttt{DataSource}, l'\texttt{EntityManagerFactory} e il \texttt{TransactionManager}.
+
+\begin{lstlisting}[language=Java, caption=src/main/resources/application.properties]
+# 1. Connessione DB (HikariCP e' il default in Spring Boot)
+spring.datasource.url=jdbc:postgresql://localhost:5432/spring_db
+spring.datasource.username=admin
+spring.datasource.password=secret
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# 2. Configurazione JPA / Hibernate
+# update: aggiorna lo schema se l'entity cambia (comodo in dev)
+# validate: verifica che il DB corrisponda all'Entity (obbligatorio in prod)
+spring.jpa.hibernate.ddl-auto=update
+
+# Mostra le query SQL formattate
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+# 3. Dialect (Spesso Spring lo indovina da solo, ma meglio esplicitarlo)
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+\end{lstlisting}
+
+\section{2. L'Entity (Standard JPA)}
+
+L'Entity rimane quasi identica all'esempio Hibernate puro. Spring Data usa le annotazioni standard di JPA.
+
+\begin{lstlisting}[language=Java, caption=User.java]
+@Entity
+@Table(name = "users")
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String username;
+
+    private String email;
+    
+    private boolean active;
+
+    // Costruttori, Getter, Setter, toString...
+}
+\end{lstlisting}
+
+\section{3. Il Repository (La Magia)}
+
+Qui avviene la rivoluzione. Invece di scrivere una classe \texttt{UserRepositoryImpl} con 100 righe di codice per aprire sessioni e fare query, creiamo un'\textbf{Interfaccia}.
+
+\begin{lstlisting}[language=Java, caption=UserRepository.java]
+// Estendendo JpaRepository ereditiamo SUBITO metodi come:
+// save(), findById(), findAll(), delete(), count()...
+@Repository
+public interface UserRepository extends JpaRepository<User, Long> {
+
+    // --- A. DERIVED QUERIES (Query derivate dal nome) ---
+    // Spring analizza il nome del metodo e crea la query JPQL automaticamente!
+    
+    // SELECT * FROM users WHERE email = ?
+    Optional<User> findByEmail(String email);
+
+    // SELECT * FROM users WHERE active = true AND username LIKE ?
+    List<User> findByActiveTrueAndUsernameContaining(String partialName);
+
+    // --- B. CUSTOM JPQL QUERY (@Query) ---
+    // Quando il nome del metodo diventa troppo lungo o complesso
+    @Query("SELECT u FROM User u WHERE u.active = true ORDER BY u.username")
+    List<User> findAllActiveUsers();
+
+    // --- C. NATIVE QUERY (SQL Puro) ---
+    // Da usare solo se strettamente necessario (accoppia al DB specifico)
+    @Query(value = "SELECT * FROM users u WHERE u.email LIKE '%@gmail.com'", 
+           nativeQuery = true)
+    List<User> findGmailUsers();
+}
+\end{lstlisting}
+
+\begin{interview}{Come funziona findByEmail() se non l'ho implementato?}
+    \textbf{Domanda:} "Come fa Java a eseguire un metodo che è definito solo in un'interfaccia senza classe concreta?"
+    
+    \textbf{Risposta:} Al bootstrap dell'applicazione, Spring Data usa la \textbf{Java Dynamic Proxy API}.
+    Crea al volo una classe in memoria che implementa l'interfaccia \texttt{UserRepository}.
+    Quando chiami \texttt{findByEmail}, il proxy intercetta la chiamata, analizza il nome del metodo (parsing), genera l'SQL corrispondente e lo esegue tramite l'\texttt{EntityManager} sottostante.
+\end{interview}
+
+\section{4. Ottimizzazioni: Paginazione e Proiezioni}
+
+Un errore da Junior è caricare \texttt{findAll()} su una tabella con un milione di record. Spring Data offre soluzioni integrate.
+
+\subsection{Paginazione}
+Basta aggiungere un parametro \texttt{Pageable} al metodo del repository.
+
+\begin{lstlisting}[language=Java, caption=Repository con Paginazione]
+// Restituisce una "Pagina" di utenti (dati + metadati come totalPages)
+Page<User> findByActiveTrue(Pageable pageable);
+\end{lstlisting}
+
+\subsection{Proiezioni (DTO)}
+Spesso non serve caricare l'intera Entity (magari ha relazioni pesanti). Possiamo definire un'interfaccia (o un Record) con solo i getter che ci servono. Spring scriverà una SELECT ottimizzata.
+
+\begin{lstlisting}[language=Java, caption=Proiezione Interface-based]
+// 1. Definiamo la "vista" ridotta
+public interface UserSummary {
+    String getUsername();
+    String getEmail();
+    // L'ID e la password NON verranno caricati dal DB
+}
+
+// 2. Usiamola nel Repository
+List<UserSummary> findByActiveTrue();
+\end{lstlisting}
+
+\section{5. Il Service Layer (Transazioni)}
+
+In Spring, il Repository non dovrebbe gestire le transazioni. La logica transazionale appartiene al \textbf{Service}.
+L'annotazione \texttt{@Transactional} fa tutto il lavoro sporco (apre, committa, rollbacka).
+
+\begin{lstlisting}[language=Java, caption=UserService.java]
+@Service
+public class UserService {
+
+    private final UserRepository userRepo;
+
+    // Constructor Injection (Best Practice rispetto a @Autowired)
+    public UserService(UserRepository userRepo) {
+        this.userRepo = userRepo;
+    }
+
+    @Transactional(readOnly = true) // Ottimizzazione per sole letture
+    public Page<User> getAllActive(int page, int size) {
+        return userRepo.findByActiveTrue(PageRequest.of(page, size));
+    }
+
+    @Transactional // Default: Read-Write
+    public void registerUser(User user) {
+        if (userRepo.findByEmail(user.getEmail()).isPresent()) {
+            throw new IllegalArgumentException("Email già esistente");
+        }
+        userRepo.save(user);
+        // Al termine del metodo avviene il COMMIT automatico.
+        // Se viene lanciata una RuntimeException, avviene il ROLLBACK.
+    }
+}
+\end{lstlisting}
+
+\begin{deepdive}{@Transactional e il Proxy}
+    Quando metti \texttt{@Transactional} su un metodo, Spring avvolge il tuo Service in un Proxy (CGLIB o JDK).
+    
+    Il flusso reale è:
+    \begin{enumerate}
+        \item Il chiamante invoca il metodo sul Proxy.
+        \item Il Proxy apre la transazione DB.
+        \item Il Proxy chiama il metodo reale del tuo Service.
+        \item Se il metodo finisce bene $\to$ Proxy fa Commit.
+        \item Se il metodo lancia eccezione $\to$ Proxy fa Rollback.
+    \end{enumerate}
+    \textbf{Attenzione:} Se chiami un metodo transazionale da un altro metodo \textbf{della stessa classe} (es. \texttt{this.registerUser()}), il Proxy viene saltato e la transazione non parte! (Self-Invocation Problem).
+\end{deepdive}
+
+\section{6. Esecuzione: CommandLineRunner}
+
+In un'app Spring Boot, non c'è il \texttt{public static void main} classico per la logica. Si usa un Bean che implementa \texttt{CommandLineRunner}, che viene eseguito all'avvio.
+
+\begin{lstlisting}[language=Java, caption=DataLoader.java]
+@Component
+public class DataLoader implements CommandLineRunner {
+
+    private final UserService userService;
+
+    public DataLoader(UserService userService) {
+        this.userService = userService;
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        System.out.println("--- SPRING BOOT DATA DEMO ---");
+
+        User u = new User();
+        u.setUsername("SpringMaster");
+        u.setEmail("master@spring.io");
+        u.setActive(true);
+
+        userService.registerUser(u);
+        System.out.println("Utente registrato!");
+
+        // Test Paginazione
+        Page<User> page = userService.getAllActive(0, 10);
+        System.out.println("Utenti attivi trovati: " + page.getTotalElements());
+        
+        page.getContent().forEach(user -> 
+            System.out.println(" - " + user.getUsername())
+        );
+    }
+}
+\end{lstlisting}
+
+\begin{interview}{Differenza tra CrudRepository e JpaRepository?}
+    \textbf{Domanda:} "Vedo usare entrambi. Quale devo estendere?"
+    
+    \textbf{Risposta:}
+    \begin{itemize}
+        \item \textbf{CrudRepository:} È l'interfaccia base. Offre solo metodi CRUD (\texttt{save}, \texttt{findById}, \texttt{findAll}).
+        \item \textbf{PagingAndSortingRepository:} Estende CrudRepository aggiungendo la paginazione.
+        \item \textbf{JpaRepository:} Estende le precedenti ed aggiunge metodi specifici per JPA (es. \texttt{flush()}, \texttt{saveAndFlush()}, gestione batch).
+    \end{itemize}
+    \textbf{Consiglio:} Nel 99\% dei casi, estendi \textbf{JpaRepository} perché offre il set completo di funzionalità.
+\end{interview}
 
 % -------------------------------------------------------------------
 % CAPITOLO
@@ -13490,6 +14510,214 @@ Se si migra un'applicazione esistente, non basta aggiornare il JAR; bisogna lanc
     Ora, richiedendoli esplicitamente nel builder, si evitano ambiguità in applicazioni complesse con più database o più transaction manager (scenario frequente nelle grandi aziende).
 \end{deepdive}
 
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
+\chapter{Esempio Pratico: ETL con Spring Batch}
+
+In questo capitolo costruiremo un Job completo per importare dati da un CSV al Database.
+Questo è l'esempio "Hello World" del mondo Batch, ma contiene tutti gli elementi architetturali necessari per costruire sistemi complessi.
+
+\section{1. Il Dominio e il File di Input}
+
+Abbiamo un file \texttt{users.csv} nella cartella \texttt{src/main/resources}:
+\begin{verbatim}
+Mario,Rossi,mario@test.com
+Luigi,Verdi,luigi@test.com
+Wario,Neri,invalid-email
+\end{verbatim}
+
+Ci servono due classi: una per mappare la riga del CSV (DTO) e una per mappare la tabella del DB (Entity).
+
+\begin{lstlisting}[language=Java, caption=UserDTO e UserEntity]
+// DTO: Mappa la riga del CSV
+public record UserInput(String firstName, String lastName, String email) {}
+
+// Entity: Mappa la tabella DB
+@Entity
+@Table(name = "batch_users")
+public class User {
+    @Id @GeneratedValue
+    private Long id;
+    private String fullName; // Notare: campo diverso dal CSV
+    private String email;
+    private LocalDateTime importedAt;
+    
+    // costruttori, getter, setter...
+}
+\end{lstlisting}
+
+\section{2. Configurazione del Job (Spring Batch 5)}
+
+In Spring Boot 3, la configurazione è esplicita. Dobbiamo definire i bean per \texttt{Job}, \texttt{Step} e i componenti di lettura/scrittura.
+
+\begin{lstlisting}[language=Java, caption=BatchConfig.java - Struttura]
+@Configuration
+public class BatchConfig {
+
+    // 1. READER: Legge dal CSV
+    @Bean
+    public FlatFileItemReader<UserInput> reader() {
+        return new FlatFileItemReaderBuilder<UserInput>()
+            .name("userItemReader")
+            .resource(new ClassPathResource("users.csv"))
+            .delimited() // File delimitato (default virgola)
+            .names("firstName", "lastName", "email") // Colonne
+            .targetType(UserInput.class) // Mapping automatico sul Record
+            .build();
+    }
+
+    // 2. PROCESSOR: Logica di Business
+    @Bean
+    public ItemProcessor<UserInput, User> processor() {
+        return item -> {
+            // Filtro: Se l'email non contiene '@', scarta il record
+            if (!item.email().contains("@")) {
+                return null; // Null significa SKIP in Spring Batch
+            }
+
+            // Trasformazione
+            User user = new User();
+            user.setFullName(item.firstName().toUpperCase() + " " + item.lastName().toUpperCase());
+            user.setEmail(item.email());
+            user.setImportedAt(LocalDateTime.now());
+            
+            return user;
+        };
+    }
+
+    // 3. WRITER: Scrive su DB (Usando un Repository JPA)
+    @Bean
+    public RepositoryItemWriter<User> writer(UserRepository repository) {
+        return new RepositoryItemWriterBuilder<User>()
+            .repository(repository)
+            .methodName("save")
+            .build();
+    }
+}
+\end{lstlisting}
+
+\section{3. Assemblaggio: Job e Step}
+
+Ora che abbiamo i "pezzi", dobbiamo assemblarli.
+Qui notiamo la differenza principale con le vecchie versioni: dobbiamo iniettare esplicitamente il \texttt{JobRepository} e il \texttt{TransactionManager}.
+
+\begin{lstlisting}[language=Java, caption=Definizione Job e Step]
+@Configuration
+public class JobConfig {
+
+    @Bean
+    public Job importUserJob(JobRepository jobRepository, Step step1) {
+        return new JobBuilder("importUserJob", jobRepository)
+            .incrementer(new RunIdIncrementer()) // Permette di ri-lanciare il job più volte
+            .start(step1) // Il job ha un solo step
+            .build();
+    }
+
+    @Bean
+    public Step step1(JobRepository jobRepository, 
+                      PlatformTransactionManager transactionManager,
+                      FlatFileItemReader<UserInput> reader,
+                      ItemProcessor<UserInput, User> processor,
+                      RepositoryItemWriter<User> writer) {
+                      
+        return new StepBuilder("step1", jobRepository)
+            .<UserInput, User>chunk(10, transactionManager) // Transaction boundary
+            .reader(reader)
+            .processor(processor)
+            .writer(writer)
+            // Fault Tolerance (Opzionale)
+            .faultTolerant()
+            .skip(FlatFileParseException.class) // Se il CSV è rotto, salta la riga
+            .skipLimit(5)
+            .build();
+    }
+}
+\end{lstlisting}
+
+\begin{deepdive}{Chunk Size e Transazioni}
+    Nell'esempio sopra abbiamo \texttt{.chunk(10, transactionManager)}.
+    Significa che Spring Batch:
+    \begin{enumerate}
+        \item Apre una transazione.
+        \item Legge 10 righe dal CSV.
+        \item Processa 10 righe (trasformazione in Entity).
+        \item Passa una \texttt{List<User>} di 10 elementi al Writer.
+        \item Il Writer salva tutto.
+        \item \textbf{COMMIT} della transazione.
+    \end{enumerate}
+    Se il record n. 9 genera un errore, \textbf{tutti e 10 vengono rollbackati} (a meno di configurazioni di Skip specifiche).
+\end{deepdive}
+
+\section{4. Esecuzione del Job}
+
+Di default, Spring Boot lancia \textbf{tutti} i Job configurati all'avvio dell'applicazione.
+Questo è comodo per i test, ma in produzione spesso vogliamo lanciare i job via HTTP o via schedulazione temporale (Cron).
+
+\subsection{Disabilitare l'avvio automatico}
+Nel file \texttt{application.properties}:
+\begin{verbatim}
+spring.batch.job.enabled=false
+\end{verbatim}
+
+\subsection{Lancio Manuale (Controller)}
+Possiamo creare un endpoint REST per scatenare il batch su richiesta.
+
+\begin{lstlisting}[language=Java, caption=JobLauncherController.java]
+@RestController
+@RequestMapping("/batch")
+public class JobLauncherController {
+
+    private final JobLauncher jobLauncher;
+    private final Job job;
+
+    public JobLauncherController(JobLauncher jobLauncher, Job job) {
+        this.jobLauncher = jobLauncher;
+        this.job = job;
+    }
+
+    @PostMapping("/start")
+    public String startJob() throws Exception {
+        // I JobParameters rendono l'istanza del Job unica.
+        // Aggiungiamo il timestamp per poterlo rilanciare quando vogliamo.
+        JobParameters params = new JobParametersBuilder()
+                .addLong("time", System.currentTimeMillis())
+                .toJobParameters();
+
+        // L'esecuzione è ASINCRONA di default se configurato un TaskExecutor,
+        // ma sincrona (blocca la riposta HTTP) con la configurazione standard.
+        jobLauncher.run(job, params);
+
+        return "Job avviato!";
+    }
+}
+\end{lstlisting}
+
+\begin{interview}{JobParameters e Unicità}
+    \textbf{Domanda:} "Perché hai aggiunto il parametro \texttt{time}?"
+    
+    \textbf{Risposta:} Per Spring Batch, una \textbf{JobInstance} è definita dalla coppia (Nome Job + Parametri).
+    Se lancio \texttt{importUserJob} oggi con parametro \texttt{date=2023-10-01} e finisce con successo (\texttt{COMPLETED}), non posso più rilanciarlo con gli stessi parametri. Spring mi direbbe: \textit{"Questo lavoro è già stato fatto!"}.
+    Per rieseguirlo (es. per debug), devo cambiare almeno un parametro.
+\end{interview}
+
+\section{5. Monitoraggio: Le Tabelle di Metadati}
+
+Dopo aver lanciato il Job, possiamo ispezionare il database per vedere cosa è successo. Spring Batch popola automaticamente le sue tabelle di sistema.
+
+\begin{itemize}
+    \item \textbf{BATCH\_JOB\_INSTANCE:} Registra che esiste il job "importUserJob".
+    \item \textbf{BATCH\_JOB\_EXECUTION:} Registra lo status (\texttt{COMPLETED}), \texttt{START\_TIME}, \texttt{END\_TIME}.
+    \item \textbf{BATCH\_STEP\_EXECUTION:} Dettagli granulari:
+    \begin{itemize}
+        \item \texttt{READ\_COUNT}: Quanti record letti (es. 3).
+        \item \texttt{WRITE\_COUNT}: Quanti scritti (es. 2, perché 1 filtrato).
+        \item \texttt{FILTER\_COUNT}: 1 (quello con email invalida).
+        \item \texttt{COMMIT\_COUNT}: 1 (se chunk size > 3).
+    \end{itemize}
+\end{itemize}
+
+Questi dati sono oro colato per il monitoraggio e il debugging in produzione.
 
 % -------------------------------------------------------------------
 % CAPITOLO
