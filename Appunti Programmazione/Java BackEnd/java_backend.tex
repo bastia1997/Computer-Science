@@ -9117,7 +9117,7 @@ Senza questo meccanismo, avresti due oggetti Java diversi che rappresentano la s
 % -------------------------------------------------------------------
 \chapter{Advanced Mapping Strategy}
 
-Se il Capitolo 1 riguardava il "Motore" (EntityManager), questo riguarda la "Carrozzeria".
+Se l'EntityManager riguarda il motore, questo riguarda la "Carrozzeria".
 Mappare oggetti Java su tabelle relazionali è un'operazione piena di compromessi. Un mapping sbagliato può rendere il database inconsistente o le query disastrosamente lente.
 
 In questo capitolo definiremo il "Contratto" tra Java e SQL, esplorando le relazioni e le strategie di ereditarietà.
@@ -12806,24 +12806,41 @@ Questa riceve \textbf{tutte} le richieste HTTP in ingresso e ha il compito di sm
 Il Controller è il componente che espone i punti di accesso (Endpoint) della tua applicazione al mondo esterno. In un'architettura REST, ogni metodo del controller corrisponde solitamente a una combinazione di URL + Verbo HTTP.
 
 \subsection{@Controller vs @RestController}
-Spesso si crea confusione su quale annotazione usare.
+Spesso capita di confondersi su quale annotazione utilizzare in un'applicazione Spring MVC.
 
 \begin{itemize}
-    \item \textbf{@Controller:} È l'annotazione originale di Spring MVC. I metodi di questa classe, di default, restituiscono una \texttt{String} che rappresenta il \textbf{nome della vista} (es. "index.html" o "home.jsp"). Per restituire dati grezzi, bisognava aggiungere \texttt{@ResponseBody} su ogni metodo.
-    \item \textbf{@RestController:} Introdotta in Spring 4.0, è un'annotazione di convenienza che combina \texttt{@Controller} + \texttt{@ResponseBody}. I metodi restituiscono oggetti che vengono automaticamente serializzati in JSON (o XML) nel corpo della risposta HTTP.
+    \item \textbf{@Controller:} È l'annotazione classica di Spring MVC. I metodi di questa classe, se restituiscono una \texttt{String}, non inviano quel testo come risposta, ma indicano il \textbf{nome della vista} da renderizzare.  
+    Questo nome viene poi passato ad un componente interno di Spring chiamato \textbf{ViewResolver}, che trasforma la stringa (es. "index") nel percorso reale del file della vista (es. "index.html", "index.jsp", ecc.), in base alla configurazione dell'applicazione.  
+    Se invece si vuole restituire direttamente un dato (testo, JSON, ecc.), è necessario annotare il metodo con \texttt{@ResponseBody}.
+    
+    \item \textbf{@RestController:} Introdotta da Spring 4.0, combina automaticamente \texttt{@Controller} e \texttt{@ResponseBody}.  
+    Questo significa che i metodi restituiscono direttamente il contenuto della risposta HTTP: se l'oggetto è un POJO, Spring lo serializza in JSON (o XML) senza passare dal ViewResolver.
 \end{itemize}
 
-\begin{deepdive}{Dietro le quinte}
-    \texttt{@RestController} è definita letteralmente così:
-    \begin{verbatim}
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Controller
-    @ResponseBody
-    public @interface RestController {}
-    \end{verbatim}
-    Questo dimostra che è solo "zucchero sintattico".
+\begin{deepdive}{Dietro le quinte delle annotation di @RestController}
+L'annotazione \texttt{@RestController} è definita così:
+
+\begin{verbatim}
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+@Controller
+@ResponseBody
+public @interface RestController {}
+\end{verbatim}
+
+Vediamo cosa significano le singole annotation:
+
+\begin{itemize}
+    \item \texttt{@Target(ElementType.TYPE)}: indica che \texttt{@RestController} può essere applicata solo a classi, interfacce o enum. 
+    \item \texttt{@Retention(RetentionPolicy.RUNTIME)}: indica che l'annotazione è disponibile a runtime, quindi Spring può leggerla durante l'esecuzione dell'applicazione.
+    \item \texttt{@Controller}: è l'annotazione di Spring MVC che indica che la classe gestisce richieste web e può restituire nomi di viste.
+    \item \texttt{@ResponseBody}: dice a Spring che i metodi della classe restituiranno direttamente il contenuto della risposta HTTP (testo, JSON, XML), senza passare dal ViewResolver.
+\end{itemize}
+
+In sintesi, \texttt{@RestController} è solo "zucchero sintattico" che unisce le funzionalità di \texttt{@Controller} e \texttt{@ResponseBody} in un'unica annotazione.
 \end{deepdive}
+
+
 
 \subsection{Definizione degli Endpoint}
 Per mappare le richieste HTTP ai metodi Java, usiamo le annotazioni di mapping.
@@ -13374,7 +13391,7 @@ public class WeatherService {
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
-\chapter{Deep Dive: Spring MVC vs WebFlux}
+\chapter{Spring MVC vs WebFlux}
 La scelta tra Spring MVC (Imperativo) e Spring WebFlux (Reattivo) non è solo una questione di preferenze, ma di fisica del software. Riguarda come la CPU e la Memoria vengono utilizzate per gestire l'I/O (Input/Output).
 
 \section{Visualizzare l'Architettura}
