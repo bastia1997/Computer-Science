@@ -11111,6 +11111,270 @@ Questo ci permette di scrivere codice \textbf{Disaccoppiato} (Loose Coupling) e 
 
 \part{Ecosistema Spring}
 
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
+\chapter{Guida Completa alle Dipendenze Maven}
+Selezionare le dipendenze su \textit{Spring Initializr} può sembrare un gioco a crocette, ma ogni spunta porta con sé un intero ecosistema. In questo capitolo analizziamo nel dettaglio le dipendenze standard di mercato per lo sviluppo Enterprise, divise per area di competenza.
+
+\section{Comprendere gli Scope di Maven}
+Prima di vedere le librerie, è fondamentale capire \textit{quando} queste vengono caricate. Inserire una dipendenza nello scope sbagliato può gonfiare il JAR finale o causare crash all'avvio.
+
+\begin{itemize}
+    \item \textbf{compile} (Default): La libreria serve per compilare il codice ed è presente nel JAR finale. (Es. \texttt{spring-boot-starter-web}).
+    \item \textbf{runtime}: La libreria NON serve per compilare (il codice Java non la vede direttamente), ma serve all'esecuzione. (Es. Driver JDBC, Logback).
+    \item \textbf{provided}: La libreria serve per compilare, ma ci si aspetta che l'ambiente dove girerà l'app la fornisca. (Es. \texttt{lombok}, Server Tomcat esterno).
+    \item \textbf{test}: Disponibile solo nella cartella \texttt{src/test}. (Es. \texttt{JUnit}, \texttt{Mockito}).
+\end{itemize}
+
+% -----------------------------------------------------------
+% AREA WEB
+% -----------------------------------------------------------
+\section{Area 1: Sviluppo Web e API}
+
+\subsection{Standard MVC (Imperativo)}
+\textbf{Quando usarlo:} Per il 90\% delle applicazioni REST API standard, architettura bloccante (thread-per-request).
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+\end{lstlisting}
+
+\textbf{Il "Calderone" include:}
+\begin{enumerate}
+    \item \textbf{Spring MVC}: Il core del framework (Controller, DispatcherServlet).
+    \item \textbf{Tomcat (Embedded)}: Il server web di default.
+    \item \textbf{Jackson (ObjectMapper)}: Per la serializzazione JSON automatica.
+    \item \textbf{Logback}: Framework di logging.
+\end{enumerate}
+
+\subsection{Reactive Web (WebFlux)}
+\textbf{Quando usarlo:} Applicazioni ad alta concorrenza, streaming dati, chat, architettura non bloccante (Event Loop).
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-webflux</artifactId>
+</dependency>
+\end{lstlisting}
+
+\begin{deepdive}{Web vs WebFlux}
+\textbf{Attenzione:} Non mischiarli se non sai esattamente cosa stai facendo.
+\begin{itemize}
+    \item \texttt{starter-web} usa \textbf{Tomcat} e l'API Servlet (Bloccante).
+    \item \texttt{starter-webflux} usa \textbf{Netty} (Non bloccante/Asincrono).
+\end{itemize}
+Se li includi entrambi, Spring Boot di default configurerà l'applicazione come MVC (Tomcat), "spegnendo" la parte reattiva di default a meno di configurazioni specifiche.
+\end{deepdive}
+
+% -----------------------------------------------------------
+% AREA DATI
+% -----------------------------------------------------------
+\section{Area 2: Persistenza e Dati}
+
+\subsection{JPA e Database Relazionali}
+Per interagire con SQL Server, MySQL, Postgres, Oracle.
+
+\begin{lstlisting}[language=XML]
+<!-- 1. ORM e Astrazioni -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-jpa</artifactId>
+</dependency>
+
+<!-- 2. Driver (Sceglierne UNO solo) -->
+<dependency>
+    <groupId>com.mysql</groupId> <!-- Oppure org.postgresql -->
+    <artifactId>mysql-connector-j</artifactId>
+    <scope>runtime</scope>
+</dependency>
+\end{lstlisting}
+
+\textbf{Cosa succede sotto il cofano:}
+\begin{itemize}
+    \item Viene avviato \textbf{HikariCP} (Connection Pool).
+    \item Viene configurato \textbf{Hibernate Core} come implementazione JPA.
+    \item Vengono scansionati i \texttt{Repository} per creare le query automaticamente.
+\end{itemize}
+
+\subsection{Database Migrations (Flyway)}
+In produzione non si usa \texttt{ddl-auto=update}. Si usano strumenti di versionamento del DB.
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.flywaydb</groupId>
+    <artifactId>flyway-core</artifactId>
+</dependency>
+<!-- Se usi MySQL 8+ o MariaDB recenti potrebbe servire anche: -->
+<dependency>
+    <groupId>org.flywaydb</groupId>
+    <artifactId>flyway-mysql</artifactId>
+</dependency>
+\end{lstlisting}
+
+\begin{interview}{Perché usare Flyway invece di Hibernate ddl-auto?}
+Hibernate tenta di indovinare come aggiornare lo schema, ma su database complessi può fare danni (es. droppare colonne con dati). Flyway esegue script SQL numerati (es. \texttt{V1\_\_init.sql}, \texttt{V2\_\_add\_column.sql}) in ordine garantito, assicurando che tutti gli ambienti (Dev, Test, Prod) abbiano esattamente lo stesso schema.
+\end{interview}
+
+\subsection{Redis (Cache e Sessioni)}
+Per caching veloce o gestione sessioni distribuite.
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+\end{lstlisting}
+\textbf{Nota:} Include i client \textbf{Lettuce} o \textbf{Jedis} per connettersi a Redis.
+
+% -----------------------------------------------------------
+% AREA UTILITY
+% -----------------------------------------------------------
+\section{Area 3: Utility e Qualità del Codice}
+
+\subsection{Lombok (Riduzione Boilerplate)}
+Essenziale per pulire il codice da getter/setter/costruttori.
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.projectlombok</groupId>
+    <artifactId>lombok</artifactId>
+    <optional>true</optional> <!-- Non serve a chi usa la tua libreria -->
+</dependency>
+\end{lstlisting}
+
+\subsection{Validazione Dati (JSR-380)}
+Per usare annotazioni come \texttt{@NotNull}, \texttt{@Email}, \texttt{@Size} nei DTO. Dalla versione Spring Boot 2.3 non è più incluso in \texttt{web}, va aggiunto a parte!
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-validation</artifactId>
+</dependency>
+\end{lstlisting}
+
+\subsection{MapStruct (Mapping DTO $\leftrightarrow$ Entity)}
+Lo standard industriale per convertire Entità in DTO e viceversa. Molto più performante di \textit{ModelMapper} perché genera codice Java puro in compilazione, senza usare Reflection a runtime.
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.mapstruct</groupId>
+    <artifactId>mapstruct</artifactId>
+    <version>1.5.5.Final</version>
+</dependency>
+<!-- NOTA: Richiede configurazione nel plugin maven-compiler per funzionare con Lombok -->
+\end{lstlisting}
+
+% -----------------------------------------------------------
+% AREA SICUREZZA
+% -----------------------------------------------------------
+\section{Area 4: Sicurezza}
+
+\subsection{Spring Security}
+Il framework di sicurezza de-facto.
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+\end{lstlisting}
+\textbf{Effetto immediato:} Al riavvio dell'app, tutte le chiamate HTTP richiedono autenticazione (Basic Auth) e viene generata una password nella console.
+
+\subsection{Gestione JWT (JSON Web Tokens)}
+Spring Security non ha supporto nativo completo per \textbf{generare} JWT (lo ha per validarli via OAuth2 Resource Server). Spesso si usano librerie esterne per crearli e firmarli.
+
+\begin{lstlisting}[language=XML]
+<!-- Libreria standard per creare/parsare JWT -->
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-api</artifactId>
+    <version>0.11.5</version>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-impl</artifactId>
+    <version>0.11.5</version>
+    <scope>runtime</scope>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-jackson</artifactId>
+    <version>0.11.5</version>
+    <scope>runtime</scope>
+</dependency>
+\end{lstlisting}
+
+% -----------------------------------------------------------
+% AREA OPS
+% -----------------------------------------------------------
+\section{Area 5: Monitoring e Ops}
+
+\subsection{Spring Boot Actuator}
+Fondamentale per andare in produzione (Kubernetes, AWS).
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+\end{lstlisting}
+
+\textbf{Cosa offre:}
+\begin{itemize}
+    \item Endpoint \texttt{/actuator/health}: Dice al load balancer se l'app è viva.
+    \item Endpoint \texttt{/actuator/metrics}: Espone metriche (CPU, RAM, Thread) per Prometheus/Grafana.
+    \item Endpoint \texttt{/actuator/env}: Mostra le proprietà di configurazione caricate.
+\end{itemize}
+
+% -----------------------------------------------------------
+% AREA TESTING
+% -----------------------------------------------------------
+\section{Area 6: Testing}
+
+\begin{lstlisting}[language=XML]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+</dependency>
+\end{lstlisting}
+
+\textbf{Il "Calderone" di Test include:}
+\begin{center}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\rowcolor{deepblue} \textcolor{white}{\textbf{Libreria}} & \textcolor{white}{\textbf{Scopo}} \\ \hline
+\textbf{JUnit 5} & Motore di esecuzione dei test (Jupiter). \\ \hline
+\textbf{Mockito} & Framework per creare oggetti finti (Mock) e simulare comportamenti. \\ \hline
+\textbf{AssertJ} & Libreria per asserzioni fluenti (es. \texttt{assertThat(result).isEqualTo("OK")}). \\ \hline
+\textbf{Hamcrest} & Libreria di "matchers" (usata spesso con MockMvc). \\ \hline
+\textbf{JSONassert} & Per verificare che due stringhe JSON siano uguali (ignorando l'ordine dei campi). \\ \hline
+\textbf{Spring Test} & Utilities per caricare l'ApplicationContext durante i test (\texttt{@SpringBootTest}). \\ \hline
+\end{tabularx}
+\end{center}
+
+\begin{deepdive}{Escludere Vintage Engine}
+Nelle versioni recenti di Spring Boot, JUnit 4 è supportato via "Vintage Engine". Se usi solo JUnit 5, puoi escluderlo per pulizia:
+\begin{lstlisting}[language=XML, basicstyle=\ttfamily\tiny]
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+    <exclusions>
+        <exclusion>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+        </exclusion>
+    </exclusions>
+</dependency>
+\end{lstlisting}
+\end{deepdive}
+
+
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
@@ -13110,7 +13374,236 @@ public class WeatherService {
 % -------------------------------------------------------------------
 % CAPITOLO
 % -------------------------------------------------------------------
-\chapter{Esempio Pratico: Architettura Avanzata e Annotazioni}
+\chapter{Deep Dive: Spring MVC vs WebFlux}
+La scelta tra Spring MVC (Imperativo) e Spring WebFlux (Reattivo) non è solo una questione di preferenze, ma di fisica del software. Riguarda come la CPU e la Memoria vengono utilizzate per gestire l'I/O (Input/Output).
+
+\section{Visualizzare l'Architettura}
+
+Per capire perché WebFlux scala meglio con connessioni lente o massicce, guardiamo come vengono gestiti i thread.
+
+\subsection{Spring MVC: Blocking I/O}
+In MVC, ogni richiesta occupa un thread del sistema operativo (Thread-per-Request). Se il database ci mette 2 secondi a rispondere, quel thread rimane "congelato" per 2 secondi. Non consuma CPU, ma occupa RAM e risorse di gestione.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance=1.5cm,
+    thread/.style={rectangle, draw=deepblue, fill=deepblue!10, rounded corners, minimum height=0.8cm, minimum width=2.5cm},
+    db/.style={cylinder, draw=javared, fill=javared!10, shape border rotate=90, aspect=0.25, minimum height=1.5cm, minimum width=1.5cm}
+]
+
+% Threads
+\node[thread] (t1) {Thread 1 (User A)};
+\node[thread, below=0.5cm of t1] (t2) {Thread 2 (User B)};
+\node[thread, below=0.5cm of t2] (t3) {Thread 3 (User C)};
+
+% DB
+\node[db, right=4cm of t2] (database) {Database};
+
+% Arrows
+\draw[->, thick, deepblue] (t1) -- node[above, font=\tiny] {Bloccato in attesa} (database);
+\draw[->, thick, deepblue] (t2) -- (database);
+\draw[->, thick, deepblue] (t3) -- (database);
+
+\node[draw=red, fit=(t1) (t3), dashed, label=below:\textcolor{red}{Thread Pool Limitato (es. 200)}] {};
+
+\end{tikzpicture}
+\caption{Spring MVC: Se il DB rallenta, i Thread finiscono e il server non accetta più utenti.}
+\end{figure}
+
+\subsection{WebFlux: Non-Blocking Event Loop}
+WebFlux usa un numero ridottissimo di thread (solitamente pari al numero di Core della CPU). Quando arriva una richiesta che deve andare al DB, il thread "prenota" la richiesta e passa subito a gestire un altro utente. Quando il DB risponde, scatta un evento che il thread raccoglie.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance=2cm,
+    worker/.style={circle, draw=intervieworange, fill=intervieworange!10, very thick, minimum size=1.5cm},
+    req/.style={rectangle, draw=gray, dashed, minimum width=1cm},
+    db/.style={cylinder, draw=javared, fill=javared!10, shape border rotate=90, aspect=0.25, minimum height=1.5cm, minimum width=1.5cm}
+]
+
+% Event Loop
+\node[worker] (loop) {Event Loop};
+
+% Requests
+\node[req, left=2.5cm of loop] (reqs) {Migliaia di Req};
+\node[db, right=2.5cm of loop] (database) {Database};
+
+% Arrows
+\draw[->, thick, intervieworange, bend left] (reqs) to node[above, font=\tiny] {1. Accetta e delega} (loop);
+\draw[->, thick, intervieworange, bend left] (loop) to node[above, font=\tiny] {2. Richiesta asincrona} (database);
+\draw[->, thick, javared, bend left] (database) to node[below, font=\tiny] {3. Callback (Dati pronti)} (loop);
+\draw[->, thick, javared, bend left] (loop) to node[below, font=\tiny] {4. Risposta Utente} (reqs);
+
+\end{tikzpicture}
+\caption{WebFlux: Un solo thread gestisce il traffico come un vigile urbano.}
+\end{figure}
+
+\section{Confronto pratico del Codice}
+
+La differenza non è solo architetturale, ma sintattica. WebFlux richiede un cambio di paradigma: dalla programmazione sequenziale a quella \textbf{funzionale/dichiarativa}.
+
+Immaginiamo di dover fare tre operazioni:
+\begin{enumerate}
+    \item Cercare un utente per ID.
+    \item Cercare gli ordini di quell'utente.
+    \item Combinare tutto in un DTO.
+\end{enumerate}
+
+\subsection{Approccio MVC (Imperativo)}
+Il codice si legge dall'alto in basso. È facile da capire e debuggare.
+
+\begin{lstlisting}[language=Java, caption={Service MVC Classico}]
+public UserDashboardDTO getDashboard(String userId) {
+    // 1. Chiamata bloccante al DB
+    User user = userRepository.findById(userId)
+        .orElseThrow(() -> new UserNotFoundException());
+    
+    // 2. Il thread aspetta qui che finisca la prima query
+    List<Order> orders = orderRepository.findAllByUserId(userId);
+    
+    // 3. Costruzione e ritorno
+    return new UserDashboardDTO(user, orders);
+}
+\end{lstlisting}
+
+\subsection{Approccio WebFlux (Reattivo)}
+Qui non stiamo eseguendo il codice, stiamo \textit{costruendo una pipeline}. Il codice verrà eseguito solo quando qualcuno si "iscrive" (subscribe) al flusso.
+
+\begin{lstlisting}[language=Java, caption={Service WebFlux con Reactor}]
+public Mono<UserDashboardDTO> getDashboard(String userId) {
+    // 1. Inizia il flusso
+    Mono<User> userMono = userRepository.findById(userId)
+        .switchIfEmpty(Mono.error(new UserNotFoundException()));
+
+    // 2. Ottieni ordini (Flux = 0..N elementi)
+    Flux<Order> ordersFlux = orderRepository.findAllByUserId(userId);
+
+    // 3. Combina i risultati in parallelo o sequenza
+    // zipWith aspetta che entrambi i flussi siano completi
+    return userMono.zipWith(ordersFlux.collectList(), (user, orders) -> {
+        return new UserDashboardDTO(user, orders);
+    });
+}
+\end{lstlisting}
+
+\begin{deepdive}{Mono vs Flux}
+Questi sono i due mattoni fondamentali di Project Reactor (la libreria dietro WebFlux):
+\begin{itemize}
+    \item \textbf{Mono<T>}: Rappresenta un produttore che emetterà \textbf{0 o 1} elemento. (Es. `findById`).
+    \item \textbf{Flux<T>}: Rappresenta un produttore che emetterà \textbf{da 0 a N} elementi. (Es. `findAll`, o uno stream di dati infinito).
+\end{itemize}
+Non restituisci mai il dato puro, restituisci sempre il "futuro" contenitore del dato.
+\end{deepdive}
+
+\section{Il concetto di Backpressure}
+Questo è il vero vantaggio tecnico di WebFlux che spesso viene ignorato nei tutorial base.
+
+In un sistema MVC classico, se il client invia richieste troppo velocemente, il server può andare in \textit{Out Of Memory} cercando di bufferizzarle tutte.
+In WebFlux, il "Subscriber" (chi consuma i dati) può dire al "Publisher" (chi produce i dati): \textit{"Ehi, rallenta! Mandami solo 10 elementi per volta, non riesco a gestirne di più"}.
+
+\begin{interview}{Cos'è la Backpressure?}
+È un meccanismo di feedback che permette al consumatore di controllare la velocità di emissione del produttore per evitare di essere sopraffatto. È nativo nelle Reactive Streams.
+\end{interview}
+
+\section{Database: JDBC vs R2DBC}
+Un errore gravissimo è usare WebFlux con i driver classici (JDBC, JPA/Hibernate).
+
+\begin{itemize}
+    \item \textbf{JDBC (Java Database Connectivity)}: È bloccante per specifica. Se usi JDBC dentro WebFlux, blocchi l'Event Loop e l'app smette di rispondere a chiunque.
+    \item \textbf{R2DBC (Reactive Relational Database Connectivity)}: È la nuova specifica per driver SQL non bloccanti.
+\end{itemize}
+
+\textbf{Limitazioni attuali di R2DBC:}
+\begin{itemize}
+    \item Niente \textit{Lazy Loading} (tutto deve essere esplicito).
+    \item Niente \textit{Caching di primo livello} automatico come in Hibernate.
+    \item Gestione delle relazioni (@OneToMany) molto più manuale e complessa rispetto a JPA.
+\end{itemize}
+
+\section{Quando NON usare WebFlux}
+Nonostante l'hype, WebFlux non è la "pallottola d'argento". Evitalo se:
+
+\begin{enumerate}
+    \item \textbf{Il team non è esperto:} Il debug di flussi reattivi è estremamente complesso. Lo stack trace non ti dice "Errore alla riga 10", ma ti mostra una catena di operatori interni di Reactor.
+    \item \textbf{Applicazioni CPU Bound:} Se devi fare calcoli pesanti (es. criptare password, processare immagini), bloccherai l'Event Loop. In MVC blocchi un thread su 200, in WebFlux blocchi l'unico thread che gestisce tutti gli utenti!
+    \item \textbf{Hai bisogno di JPA/Hibernate:} Se il tuo modello dati è relazionalmente complesso e dipendi dalle magie di Hibernate, R2DBC ti farà soffrire.
+\end{enumerate}
+
+\section{Il Game Changer: Java 21 e i Virtual Threads}
+Fino al 2023, la scelta era binaria e dolorosa:
+\begin{itemize}
+    \item Vuoi codice semplice? Usa MVC, ma accetta limiti di scalabilità (Thread OS pesanti).
+    \item Vuoi scalabilità estrema? Usa WebFlux, ma accetta un codice complesso e difficile da debuggare.
+\end{itemize}
+
+Con l'arrivo di \textbf{Java 21} e dei \textbf{Virtual Threads (Project Loom)}, le regole del gioco sono cambiate. Possiamo dire che, per la maggior parte delle applicazioni Enterprise, \textbf{Spring MVC su Virtual Threads è il vero vincitore}.
+
+\subsection{Cosa sono i Virtual Threads?}
+I Thread classici (Platform Threads) sono mappati 1:1 sui thread del Sistema Operativo. Sono costosi: richiedono circa 1MB di RAM ciascuno e il Context Switch è lento.
+
+I \textbf{Virtual Threads} sono entità leggerissime gestite interamente dalla JVM, non dal Sistema Operativo.
+\begin{itemize}
+    \item \textbf{Costo:} Pochi Kilobyte (vs Megabyte).
+    \item \textbf{Quantità:} Puoi crearne milioni (vs migliaia).
+    \item \textbf{Funzionamento:} Quando il tuo codice fa una chiamata bloccante al DB (es. \texttt{repo.findById}), la JVM "smonta" il Virtual Thread dalla CPU, lasciando il thread del sistema operativo libero di gestire altre richieste. Quando il DB risponde, il Virtual Thread viene "rimontato" e continua.
+\end{itemize}
+
+\subsection{Perché MVC + Virtual Threads vince?}
+Questa combinazione ti offre il "Santo Graal" dello sviluppo backend:
+\begin{enumerate}
+    \item \textbf{Stile Imperativo (Blocking)}: Scrivi codice semplice, sequenziale, facile da leggere (come in MVC classico).
+    \item \textbf{Scalabilità Reattiva}: Poiché il blocco è "virtuale" ed economico, puoi gestire centinaia di migliaia di richieste concorrenti senza finire la memoria, esattamente come WebFlux.
+\end{enumerate}
+
+\begin{deepdive}{Come attivarli in Spring Boot 3.2+}
+Non devi riscrivere il codice. Non devi imparare \texttt{Mono} o \texttt{Flux}. Ti basta una riga nel file \texttt{application.properties}:
+
+\begin{lstlisting}[language=Java]
+spring.threads.virtual.enabled=true
+\end{lstlisting}
+
+Con questa singola configurazione, Tomcat (embedded) smette di usare il pool di thread standard e inizia a lanciare un nuovo Virtual Thread per \textbf{ogni} singola richiesta HTTP in arrivo.
+\end{deepdive}
+
+\section{Verdetto Finale: La nuova guida alla scelta}
+
+Alla luce di Java 21, la matrice decisionale cambia drasticamente.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.5}
+% CORREZIONE: La prima colonna ha larghezza fissa, l'ultima è X per adattarsi al testo lungo
+\begin{tabularx}{\textwidth}{|p{4.5cm}|c|X|}
+\hline
+\rowcolor{deepblue} \textcolor{white}{\textbf{Scenario}} & \textcolor{white}{\textbf{Soluzione}} & \textcolor{white}{\textbf{Motivazione}} \\ \hline
+
+\textbf{App Enterprise Standard} \newline (CRUD, API Rest, SQL) & 
+\textbf{MVC + Virtual Threads} & 
+Codice semplice, debug facile, scalabilità altissima senza la complessità reattiva. \\ \hline
+
+\textbf{Streaming Dati / Chat} \newline (WebSocket massivi) & 
+\textbf{WebFlux} & 
+Il modello a "flusso" e la backpressure rimangono superiori per gestire stream continui. \\ \hline
+
+\textbf{Java Legacy (< 21)} \newline (Versioni vecchie) & 
+\textbf{MVC o WebFlux} & 
+Senza Virtual Threads, se hai bisogno di alta scalabilità sei costretto a usare WebFlux. \\ \hline
+
+\end{tabularx}
+\end{center}
+
+\begin{interview}{Il Reactive (WebFlux) è morto?}
+\textbf{Non è morto, ma è diventato di nicchia.}
+Prima dei Virtual Threads, si usava il Reactive per due motivi: scalabilità I/O e gestione degli stream.
+Oggi, la scalabilità I/O si ottiene "gratis" con i Virtual Threads.
+Di conseguenza, WebFlux rimane la scelta migliore \textbf{solo} se hai bisogno di manipolare flussi di dati complessi (Functional Reactive Programming) o se devi gestire backpressure esplicita. Per fare una chiamata al DB e restituire un JSON, MVC con Virtual Threads è oggi la soluzione architetturalmente superiore per rapporto costi/benefici.
+\end{interview}
+
+% -------------------------------------------------------------------
+% CAPITOLO
+% -------------------------------------------------------------------
+\chapter{Esempio Pratico: Architettura SpringBoot Avanzata e Annotazioni}
 
 In questo capitolo dissezioniamo un'applicazione Spring Boot reale. Non ci limiteremo a dire "questa annotazione fa X", ma vedremo cosa succede se la omettiamo o la usiamo male.
 
